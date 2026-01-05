@@ -8,11 +8,11 @@ ORBベースの手法と異なり、フレームごとに独立して検出す�
 高速な動きに強い。
 
 インストール:
-    pip install openmim
-    mim install mmcv-full
-    mim install mmdet
-    mim install mmpose
-    pip install anime-face-detector
+
+    pip install dghs-imgutils[gpu]
+    # or
+    pip install dghs-imgutils
+
 
 使い方:
     python face_track_anime_detector.py \
@@ -42,19 +42,21 @@ from typing import Optional, Tuple
 import cv2
 import numpy as np
 
-# anime-face-detector
+# anime-face-detector -> dghs-imgutils (dwpose)
 try:
-    from anime_face_detector import create_detector
-    HAS_ANIME_DETECTOR = True
+    from imgutils.pose import dwpose_estimate
+    from imgutils.pose.format import OP18KeyPointSet
+    HAS_IMGUTILS = True
 except ImportError:
-    HAS_ANIME_DETECTOR = False
-    print("[warn] anime-face-detector not installed. Run:")
-    print("  pip install openmim && mim install mmcv-full mmdet mmpose")
-    print("  pip install anime-face-detector")
+    HAS_IMGUTILS = False
+    print("[warn] dghs-imgutils not installed. Run: pip install dghs-imgutils[gpu]")
 
 
-# ランドマークのインデックス定義
-MOUTH_OUTLINE = [24, 25, 26, 27]  # 口の4点
+# ランドマークのインデックス定義 (Standard 68 points)
+# 48-59: Mouth Outer Lip (12 points)
+# 60-67: Mouth Inner Lip (8 points)
+MOUTH_OUTLINE = list(range(48, 60)) 
+
 
 
 def ensure_even(n: int) -> int:
@@ -495,14 +497,24 @@ def estimate_face_rotation(keypoints: np.ndarray) -> float:
     """
     ランドマークから顔の傾き角度（度）を推定。
     
-    左目(11-16)と右目(17-22)の中心を結んだ線の角度を使用。
+    Standard 68 points:
+      Right Eye: 36-41 (digits are standard 0-indexed)
+      Left Eye: 42-47
     """
-    # 左目のランドマーク (11-16)
-    left_eye = keypoints[11:17, :2]
+    # 左目のランドマーク (42-47) -> Subject's Left (Viewer's Right)
+    # But usually 36-41 is Right Eye (Viewer's Left) and 42-47 is Left Eye (Viewer's Right)
+    # Let's verify standard 68 ordering. 
+    # (Typically 0-16 jaw, 17-21 R-Brow, 22-26 L-Brow, 27-35 Nose, 36-41 R-Eye, 42-47 L-Eye)
+    # R-Eye center vs L-Eye center
+    
+    # 36-41: Right Eye (Subject's Right / Viewer's Left)
+    # 42-47: Left Eye (Subject's Left / Viewer's Right)
+    
+    left_eye = keypoints[42:48, :2]  # indices 42..47
     left_eye_center = left_eye.mean(axis=0)
     
-    # 右目のランドマーク (17-23)
-    right_eye = keypoints[17:23, :2]
+    # 右目のランドマーク (36-41)
+    right_eye = keypoints[36:42, :2] # indices 36..41
     right_eye_center = right_eye.mean(axis=0)
     
     # 目の中心を結ぶベクトルから角度を計算
@@ -708,8 +720,8 @@ def save_metrics_png(path: str, series: dict[str, np.ndarray], title: str = "") 
 
 
 def main() -> int:
-    if not HAS_ANIME_DETECTOR:
-        print("[error] anime-face-detector is required.")
+    if not HAS_IMGUTILS:
+        print("[error] dghs-imgutils is required.")
         return 1
 
     ap = argparse.ArgumentParser()
@@ -738,29 +750,10 @@ def main() -> int:
     ap.add_argument("--ref-sprite-h", type=int, default=85, help="参照スプライト高さ (互換性用)")
     args = ap.parse_args()
 
-    print(f"[info] creating detector (model={args.model}, device={args.device})...")
-    # device fallback:
-    # - --device auto: try cuda:0 then cpu
-    # - --device cuda:*: if init fails, fallback cpu
-    detector = None
-    last_err = None
-    if args.device == "auto":
-        device_try = ["cuda:0", "cpu"]
-    else:
-        device_try = [args.device]
-        if args.device.startswith("cuda"):
-            device_try.append("cpu")
-    for dev in device_try:
-        try:
-            detector = create_detector(args.model, device=dev)
-            if dev != args.device:
-                print(f"[info] detector fallback: using device={dev}")
-            break
-        except Exception as e:
-            last_err = e
-            print(f"[warn] detector init failed on {dev}: {e}")
-    if detector is None:
-        raise RuntimeError(f"Failed to create detector. Last error: {last_err}")
+    print(f"[info] detector: dghs-imgutils (dwpose)")
+    # No explicit detector initialization needed for dwpose function call, 
+    # but models will be downloaded on first run.
+
     cap = cv2.VideoCapture(args.video)
     if not cap.isOpened():
         print(f"[error] failed to open video: {args.video}")
@@ -845,22 +838,65 @@ def main() -> int:
         if do_detect:
             det_count += 1
             det_frame = frame
+            # cv2 reads as BGR, imgutils expects RGB?
+            # dwpose_estimate takes "Input image". Assuming file path or PIL Image or numpy array.
+            # If numpy array, usually expects RGB if it's from PIL. cv2 is BGR.
+            # Let's convert to RGB to be safe, though many libs handle it.
+            # imgutils functions often take file paths or PIL images.
+            det_frame_rgb = cv2.cvtColor(det_frame, cv2.COLOR_BGR2RGB)
+            
             if det_scale != 1.0:
-                det_frame = cv2.resize(frame, (det_w, det_h), interpolation=det_interp)
+                det_frame_rgb = cv2.resize(det_frame_rgb, (det_w, det_h), interpolation=det_interp)
 
-            preds = detector(det_frame)
+            # Detect faces/pose
+            # Returns List[OP18KeyPointSet]
+            from PIL import Image
+            dw_preds = dwpose_estimate(Image.fromarray(det_frame_rgb))
+            
+            # Convert to local unified format
+            preds = []
+            for pred in dw_preds:
+                # pred is OP18KeyPointSet
+                # pred.face is the face keypoints (numpy array)
+                # We need to construct a bbox and keypoints array
+                
+                # Check if face exists
+                # OP18KeyPointSet doesn't seem to have a flag, but if .face is valid points...
+                # The doc said "OP18_FACE_MIN = 24". 
+                # pred.all is (N, 3). 
+                
+                # Extract face points (68 points).
+                # Indices 24 to 91 inclusive (68 points).
+                face_kps = pred.all[24:92].copy() # (68, 3)
+                
+                # Filter out low confidence points? Or just take them.
+                # Assuming valid if sum of scores > threshold?
+                # For now take all.
+                
+                # Calculate bbox from face keypoints
+                # (x, y, conf)
+                xs = face_kps[:, 0]
+                ys = face_kps[:, 1]
+                
+                # Filter out points with 0 confidence if needed?
+                # Ideally we want the "Face BBox".
+                # If keypoints are all 0, it's invalid.
+                if face_kps[:, 2].max() < 0.05:
+                    continue
+                
+                x1, x2 = xs.min(), xs.max()
+                y1, y2 = ys.min(), ys.max()
+                conf = face_kps[:, 2].mean()
+                
+                bbox = np.array([x1, y1, x2, y2, conf], dtype=np.float32)
+                
+                # Scale back if needed
+                if det_scale != 1.0:
+                    bbox[:4] *= det_inv
+                    face_kps[:, :2] *= det_inv
+                
+                preds.append({'bbox': bbox, 'keypoints': face_kps})
 
-            if det_scale != 1.0 and len(preds) > 0:
-                scaled_preds = []
-                for pred in preds:
-                    bbox = np.asarray(pred['bbox'], dtype=np.float32).copy()
-                    if bbox.shape[0] >= 4:
-                        bbox[:4] *= det_inv
-                    keypoints = np.asarray(pred['keypoints'], dtype=np.float32).copy()
-                    if keypoints.shape[1] >= 2:
-                        keypoints[:, :2] *= det_inv
-                    scaled_preds.append({'bbox': bbox, 'keypoints': keypoints})
-                preds = scaled_preds
 
         quad = None
         conf = 0.0
