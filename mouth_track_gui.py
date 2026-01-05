@@ -491,26 +491,36 @@ class App(tk.Tk):
         self.btn_stop.pack(side="right")
 
         # Log
-        ttk.Label(frm, text="ログ").pack(anchor="w")
-        self.txt = tk.Text(frm, height=22, wrap="word")
+        log_frame = ttk.Frame(frm)
+        log_frame.pack(fill="x", pady=(5, 2))
+        ttk.Label(log_frame, text="ログ").pack(side="left")
+        ttk.Button(log_frame, text="ログをコピー", command=self.on_copy_log).pack(side="right")
+
+        self.txt = tk.Text(frm, height=22, wrap="word", state="disabled")
         self.txt.pack(fill="both", expand=True)
-        self.txt.configure(state="disabled")
 
     # ----- logging (thread-safe) -----
     def log(self, s: str) -> None:
         self.log_q.put(s)
 
     def _poll_logs(self) -> None:
+        self._poll_logs_once()
+        self.after(100, self._poll_logs)
+
+    def _poll_logs_once(self) -> None:
+        batch = []
         try:
             while True:
-                s = self.log_q.get_nowait()
-                self.txt.configure(state="normal")
-                self.txt.insert("end", s + "\n")
-                self.txt.see("end")
-                self.txt.configure(state="disabled")
+                batch.append(self.log_q.get_nowait())
         except queue.Empty:
             pass
-        self.after(100, self._poll_logs)
+
+        if batch:
+            self.txt.configure(state="normal")
+            for s in batch:
+                self.txt.insert("end", s + "\n")
+            self.txt.see("end")
+            self.txt.configure(state="disabled")
 
     # ----- misc helpers -----
     def _autofill_mouth_dir(self) -> None:
@@ -724,6 +734,23 @@ class App(tk.Tk):
             except Exception:
                 pass
 
+    def on_copy_log(self) -> None:
+        # Force flush any pending logs
+        self._poll_logs_once()
+        try:
+            # "1.0" to "end-1c" (to avoid the last newline tkinter adds)
+            content = self.txt.get("1.0", "end-1c")
+            # null byte check
+            if "\x00" in content:
+                content = content.replace("\x00", "")
+            
+            self.clipboard_clear()
+            self.clipboard_append(content)
+            self.update()  # ensure clipboard event is processed
+            messagebox.showinfo("成功", "ログをクリップボードにコピーしました。")
+        except Exception as e:
+            self._show_error("エラー", f"コピーに失敗しました:\n{e}")
+
     # ----- subprocess runner -----
     def _run_cmd_stream(self, cmd: list[str], cwd: str | None = None) -> int:
         """
@@ -734,6 +761,7 @@ class App(tk.Tk):
         env = os.environ.copy()
         env.setdefault("PYTHONUTF8", "1")
         env.setdefault("PYTHONIOENCODING", "utf-8")
+        env.setdefault("PYTHONUNBUFFERED", "1")
 
         popen_kw = {}
         if sys.platform.startswith("win"):
