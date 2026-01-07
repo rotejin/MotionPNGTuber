@@ -41,6 +41,34 @@ from typing import Optional, Tuple
 
 import cv2
 import numpy as np
+import os
+import sys
+
+# Windows環境で `dghs-imgutils` (onnxruntime) がNVIDIAのDLLを見つけられない問題を修正
+# site-packages/nvidia/*/bin をDLL検索パスに追加する
+def _add_nvidia_dll_paths():
+    if os.name == 'nt':
+        nvidia_paths = []
+        # sys.path から nvidia パッケージを探す
+        for p in sys.path:
+            nvidia_dir = os.path.join(p, 'nvidia')
+            if os.path.isdir(nvidia_dir):
+                for root, dirs, files in os.walk(nvidia_dir):
+                    if 'bin' in dirs:
+                        nvidia_paths.append(os.path.join(root, 'bin'))
+        
+        # 見つかった bin ディレクトリを DLL ディレクトリとして追加
+        for p in nvidia_paths:
+            try:
+                # Python 3.8+ では add_dll_directory が必要
+                if hasattr(os, 'add_dll_directory'):
+                    os.add_dll_directory(p)
+            except Exception:
+                pass
+            # 念のため PATH 環境変数にも追加（レガシーなロード用）
+            os.environ['PATH'] = p + os.pathsep + os.environ.get('PATH', '')
+
+_add_nvidia_dll_paths()
 
 # anime-face-detector -> dghs-imgutils (dwpose)
 try:
