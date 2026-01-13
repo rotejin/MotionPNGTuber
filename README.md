@@ -462,6 +462,87 @@ False の場合：
 
 ---
 
+
+## 🍎 インストール手順（Mac） **Experimental**
+
+Apple Silicon (M1/M2/M3/M4) Mac用のインストール手順です。
+
+### 1. pyproject.tomlの準備
+
+Windows用のpyproject.tomlをバックアップして、Mac用に置き換えます。
+
+```sh
+cp pyproject.toml pyproject.win.toml
+cp pyproject.macos.toml pyproject.toml
+```
+
+### 2. 仮想環境作成と基本パッケージ
+
+```sh
+uv venv .venv && uv sync
+```
+
+### 3. PyTorchとビルドツール
+
+```sh
+uv pip install pip setuptools wheel torch==2.0.1 torchvision==0.15.2
+```
+
+### 4. xtcocotoolsをソースからビルド
+
+PyPI版はビルドエラーになるため、GitHubからソースビルドします。
+
+```sh
+mkdir -p deps && cd deps
+git clone https://github.com/jin-s13/xtcocoapi.git
+cd xtcocoapi
+../../.venv/bin/python -m pip install -e .
+cd ../..
+```
+
+### 5. mmcv-fullをソースからビルド
+
+mmcv-full 1.7.0 はビルド済みバイナリが提供されていないため、ソースからビルドします。5分程度かかります（M3 MacBook Air）
+
+```sh
+cd deps
+curl -L https://github.com/open-mmlab/mmcv/archive/refs/tags/v1.7.0.tar.gz -o mmcv-1.7.0.tar.gz
+tar xzf mmcv-1.7.0.tar.gz
+cd mmcv-1.7.0
+MMCV_WITH_OPS=1 FORCE_CUDA=0 ../../.venv/bin/python setup.py develop
+MMCV_WITH_OPS=1 FORCE_CUDA=0 ../../.venv/bin/python setup.py build_ext --inplace
+cd ../..
+```
+
+### 6. anime-face-detectorをインストール
+
+xtcocotools/mmcvは既にあるのでスキップされます。`--no-build-isolation`はchumpy等のビルドに仮想環境のpipが必要なためです。
+
+```sh
+uv pip install --no-build-isolation anime-face-detector
+```
+
+### 7. mmdet/mmposeを正しいバージョンに修正
+
+anime-face-detectorが最新版を入れてしまうため、正しいバージョンに修正します。
+
+```sh
+uv pip install mmdet==2.28.0 mmpose==0.29.0
+```
+
+### 8. 起動
+
+```sh
+.venv/bin/python mouth_track_gui.py
+```
+
+### 注意事項
+
+- `deps/` ディレクトリは削除しないこと（editable installのため参照される）
+- PyTorchは2.0.1を使用（最新版はmmcv 1.7.0と互換性がない）
+- キャリブレーション時、口画像の大きさの調整は+/-キーで行う。マウスホイールによる拡大・縮小は不可
+
+
 ## 📄 ライセンス
 
 MIT License

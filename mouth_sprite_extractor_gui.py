@@ -415,13 +415,16 @@ class MouthSpriteExtractorApp(tk.Tk if not _HAS_TK_DND else TkinterDnD.Tk):
     
     def _on_select_video(self):
         """動画ファイルを選択"""
-        path = filedialog.askopenfilename(
-            title="動画ファイルを選択",
-            filetypes=[
-                ("動画ファイル", "*.mp4 *.avi *.mov *.mkv *.webm"),
-                ("すべてのファイル", "*.*"),
-            ],
-        )
+        if sys.platform == "darwin":  # Mac
+            path = filedialog.askopenfilename(title="動画ファイルを選択")
+        else:  # Windows/Linux
+            path = filedialog.askopenfilename(
+                title="動画ファイルを選択",
+                filetypes=[
+                    ("動画ファイル", "*.mp4 *.avi *.mov *.mkv *.webm"),
+                    ("すべてのファイル", "*.*"),
+                ],
+            )
         if path:
             self._set_video(path)
     

@@ -660,10 +660,13 @@ class App(tk.Tk):
 
     # ----- file pickers -----
     def on_pick_video(self) -> None:
-        p = filedialog.askopenfilename(
-            title="動画を選択",
-            filetypes=[("Video", "*.mp4;*.mov;*.mkv;*.avi;*.webm;*.m4v"), ("All", "*.*")],
-        )
+        if sys.platform == "darwin":  # Mac
+            p = filedialog.askopenfilename(title="動画を選択")
+        else:  # Windows/Linux
+            p = filedialog.askopenfilename(
+                title="動画を選択",
+                filetypes=[("Video", "*.mp4;*.mov;*.mkv;*.avi;*.webm;*.m4v"), ("All", "*.*")],
+            )
         if not p:
             return
         self.video_var.set(p)

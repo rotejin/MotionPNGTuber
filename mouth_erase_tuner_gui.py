@@ -1039,10 +1039,13 @@ class MouthEraseTunerGUI(BaseTk):
 
     # ---------- file ops ----------
     def open_image(self):
-        p = filedialog.askopenfilename(
-            title="画像を選択",
-            filetypes=[("Images", "*.png *.jpg *.jpeg *.webp *.bmp"), ("All", "*.*")]
-        )
+        if sys.platform == "darwin":  # Mac
+            p = filedialog.askopenfilename(title="画像を選択")
+        else:  # Windows/Linux
+            p = filedialog.askopenfilename(
+                title="画像を選択",
+                filetypes=[("Images", "*.png *.jpg *.jpeg *.webp *.bmp"), ("All", "*.*")]
+            )
         if not p:
             return
         self.load_image(p)
@@ -1105,11 +1108,17 @@ class MouthEraseTunerGUI(BaseTk):
         if self._out_bgr is None:
             messagebox.showinfo("未生成", "まだ結果がありません。")
             return
-        out_path = filedialog.asksaveasfilename(
-            title="保存先",
-            defaultextension=".png",
-            filetypes=[("PNG", "*.png"), ("JPG", "*.jpg"), ("All", "*.*")]
-        )
+        if sys.platform == "darwin":  # Mac
+            out_path = filedialog.asksaveasfilename(
+                title="保存先",
+                defaultextension=".png",
+            )
+        else:  # Windows/Linux
+            out_path = filedialog.asksaveasfilename(
+                title="保存先",
+                defaultextension=".png",
+                filetypes=[("PNG", "*.png"), ("JPG", "*.jpg"), ("All", "*.*")]
+            )
         if not out_path:
             return
         try:
@@ -1121,11 +1130,17 @@ class MouthEraseTunerGUI(BaseTk):
 
     # ---------- settings json ----------
     def save_settings_json(self):
-        out_path = filedialog.asksaveasfilename(
-            title="設定を保存(JSON)",
-            defaultextension=".json",
-            filetypes=[("JSON", "*.json")]
-        )
+        if sys.platform == "darwin":  # Mac
+            out_path = filedialog.asksaveasfilename(
+                title="設定を保存(JSON)",
+                defaultextension=".json",
+            )
+        else:  # Windows/Linux
+            out_path = filedialog.asksaveasfilename(
+                title="設定を保存(JSON)",
+                defaultextension=".json",
+                filetypes=[("JSON", "*.json")]
+            )
         if not out_path:
             return
         try:
@@ -1136,7 +1151,10 @@ class MouthEraseTunerGUI(BaseTk):
             messagebox.showerror("エラー", f"保存に失敗:\n{e}")
 
     def load_settings_json(self):
-        p = filedialog.askopenfilename(title="設定(JSON)を読み込む", filetypes=[("JSON", "*.json")])
+        if sys.platform == "darwin":  # Mac
+            p = filedialog.askopenfilename(title="設定(JSON)を読み込む")
+        else:  # Windows/Linux
+            p = filedialog.askopenfilename(title="設定(JSON)を読み込む", filetypes=[("JSON", "*.json")])
         if not p:
             return
         try:
