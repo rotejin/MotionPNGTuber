@@ -22,10 +22,13 @@ from __future__ import annotations
 import os
 import sys
 import json
+import shutil
+from pathlib import Path
 import queue
 import threading
 import subprocess
 import signal
+import time
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
@@ -54,6 +57,12 @@ EMOTION_PRESETS: dict[str, str] = {
     "キビキビ（ゲーム向け）": "snappy",
 }
 EMOTION_PRESET_LABELS = list(EMOTION_PRESETS.keys())
+
+SOFT_STOP_GRACE_SEC = 3.0
+STOP_BTN_TEXT_DEFAULT = "中断（現在の処理が終わったら停止）"
+STOP_BTN_TEXT_SOFT = "停止予約中（もう一度で強制停止）"
+MAX_LOG_LINES = 200  # ログ表示の上限行数
+
 # ---------- helpers ----------
 def _script_contains(path: str, needles: list[str]) -> bool:
     try:
@@ -152,6 +161,36 @@ def _safe_bool(v, default: bool = False) -> bool:
     if s in ("0", "false", "no", "n", "off"):
         return False
     return default
+
+
+def _safe_int(
+    v, default: int, min_v: int | None = None, max_v: int | None = None
+) -> int:
+    try:
+        if isinstance(v, str):
+            v = v.split(":", 1)[0].strip()
+        iv = int(float(v)) if isinstance(v, str) else int(v)
+    except Exception:
+        return default
+    if min_v is not None:
+        iv = max(min_v, iv)
+    if max_v is not None:
+        iv = min(max_v, iv)
+    return iv
+
+
+def _safe_float(
+    v, default: float, min_v: float | None = None, max_v: float | None = None
+) -> float:
+    try:
+        fv = float(v)
+    except Exception:
+        return default
+    if min_v is not None:
+        fv = max(min_v, fv)
+    if max_v is not None:
+        fv = min(max_v, fv)
+    return fv
 
 
 _EMOTION_DIR_NAMES = {"default", "neutral", "happy", "angry", "sad", "excited"}
@@ -301,12 +340,15 @@ class App(tk.Tk):
         self.worker_thread: threading.Thread | None = None
         self.stop_flag = threading.Event()
         self.active_proc: subprocess.Popen | None = None
+        self.stop_mode = "none"  # none / soft / force
+        self.soft_requested_at: float | None = None
+        self._soft_warn_job: str | None = None
 
         sess = load_session()
         # GUIでは元動画を表示したいが、runtimeは背景としてmouthlessを使いたいので
         # sessionには video(=背景用) と source_video(=元動画) を分けて保存する
-        self.video_var = tk.StringVar(value=sess.get("source_video", sess.get("video", "")))
-        self.mouth_dir_var = tk.StringVar(value=sess.get("mouth_dir", ""))
+        self.video_var = tk.StringVar(value=str(sess.get("source_video", sess.get("video", "")) or ""))
+        self.mouth_dir_var = tk.StringVar(value=str(sess.get("mouth_dir", "")) or "")
 
         # --- character / emotion-auto (runtime) ---
         self.character_var = tk.StringVar(value=str(sess.get("character", "")))
@@ -317,8 +359,8 @@ class App(tk.Tk):
         self.emotion_preset_var = tk.StringVar(value=_ep)
 
         self.emotion_hud_var = tk.BooleanVar(value=_safe_bool(sess.get("emotion_hud", True), default=True))
-        self.coverage_var = tk.DoubleVar(value=float(sess.get("coverage", 0.60)))
-        self.pad_var = tk.DoubleVar(value=float(sess.get("pad", 2.10)))
+        self.coverage_var = tk.DoubleVar(value=_safe_float(sess.get("coverage", 0.60), 0.60, min_v=0.40, max_v=0.90))
+        self.pad_var = tk.DoubleVar(value=_safe_float(sess.get("pad", 2.10), 2.10, min_v=1.00, max_v=3.00))
 
         # erase shading preset (GUI only): plane=ON, none=OFF
         _esh = sess.get("erase_shading", sess.get("shading", "plane"))
@@ -332,8 +374,13 @@ class App(tk.Tk):
         self.smoothing_menu_var = tk.StringVar(value=_smooth)
 
         # runtime用：オーディオ入力デバイス
-        self.audio_device_var = tk.IntVar(value=int(sess.get("audio_device", 31)))
+        self.audio_device_var = tk.IntVar(value=_safe_int(sess.get("audio_device", 31), 31, min_v=0))
         self.audio_device_menu_var = tk.StringVar(value="")
+
+        # Progress (step-level)
+        self.progress_var = tk.DoubleVar(value=0.0)
+        self.progress_text_var = tk.StringVar(value="待機中")
+        self._progress_total = 1
 
         self._build_ui()
 
@@ -486,12 +533,26 @@ class App(tk.Tk):
         self.btn_live.pack(side="left", padx=8)
 
         self.btn_stop = ttk.Button(
-            row_btn, text="中断（現在の処理が終わったら停止）", command=self.on_stop, state="disabled"
+            row_btn, text=STOP_BTN_TEXT_DEFAULT, command=self.on_stop, state="disabled"
         )
         self.btn_stop.pack(side="right")
 
+        # Progress
+        prog = ttk.Frame(frm)
+        prog.pack(fill="x", pady=(0, 6))
+        ttk.Label(prog, text="進捗").pack(side="left")
+        ttk.Label(prog, textvariable=self.progress_text_var).pack(side="left", padx=8)
+        self.progress = ttk.Progressbar(
+            prog, variable=self.progress_var, maximum=1.0, mode="determinate"
+        )
+        self.progress.pack(side="left", fill="x", expand=True, padx=8)
+
         # Log
-        ttk.Label(frm, text="ログ").pack(anchor="w")
+        log_header = ttk.Frame(frm)
+        log_header.pack(fill="x")
+        ttk.Label(log_header, text="ログ").pack(side="left", anchor="w")
+        ttk.Button(log_header, text="ログクリア", command=self._clear_log).pack(side="right")
+
         self.txt = tk.Text(frm, height=22, wrap="word")
         self.txt.pack(fill="both", expand=True)
         self.txt.configure(state="disabled")
@@ -508,11 +569,29 @@ class App(tk.Tk):
                 s = s.replace("\x00", "")
                 self.txt.configure(state="normal")
                 self.txt.insert("end", s + "\n")
+                # 上限チェック
+                line_count = int(self.txt.index("end-1c").split(".")[0])
+                if line_count > MAX_LOG_LINES:
+                    excess = line_count - MAX_LOG_LINES
+                    self.txt.delete("1.0", f"{excess + 1}.0")
                 self.txt.see("end")
                 self.txt.configure(state="disabled")
         except queue.Empty:
             pass
         self.after(100, self._poll_logs)
+
+    def _clear_log(self) -> None:
+        """ログをクリア（キューも空にする）"""
+        # キューをドレイン
+        try:
+            while True:
+                self.log_q.get_nowait()
+        except queue.Empty:
+            pass
+        # Textをクリア
+        self.txt.configure(state="normal")
+        self.txt.delete("1.0", "end")
+        self.txt.configure(state="disabled")
 
     # ----- misc helpers -----
     def _autofill_mouth_dir(self) -> None:
@@ -641,6 +720,50 @@ class App(tk.Tk):
     def _runtime_supports(self, runtime_py: str, flags: list[str]) -> bool:
         return _script_contains(runtime_py, flags)
 
+    def _warn_soft_stop(self) -> None:
+        if self.stop_mode != "soft":
+            return
+        self.log("[gui] 停止予約中: 終了待機中。必要ならもう一度で強制停止してください。")
+
+    def _set_stop_mode(self, mode: str) -> None:
+        def _apply():
+            if self._soft_warn_job:
+                try:
+                    self.after_cancel(self._soft_warn_job)
+                except Exception:
+                    pass
+                self._soft_warn_job = None
+
+            self.stop_mode = mode
+            if mode == "soft":
+                self.stop_flag.set()
+                self.soft_requested_at = time.monotonic()
+                self.btn_stop.configure(text=STOP_BTN_TEXT_SOFT)
+                self._soft_warn_job = self.after(
+                    int(SOFT_STOP_GRACE_SEC * 1000),
+                    self._warn_soft_stop,
+                )
+            elif mode == "force":
+                self.stop_flag.set()
+                self.soft_requested_at = None
+                self.btn_stop.configure(text=STOP_BTN_TEXT_SOFT)
+            else:
+                self.stop_flag.clear()
+                self.soft_requested_at = None
+                self.btn_stop.configure(text=STOP_BTN_TEXT_DEFAULT)
+
+        self.after(0, _apply)
+
+    def _request_soft_stop(self, p: subprocess.Popen) -> bool:
+        try:
+            if sys.platform.startswith("win"):
+                os.kill(p.pid, signal.CTRL_BREAK_EVENT)
+            else:
+                os.killpg(os.getpgid(p.pid), signal.SIGINT)
+            return True
+        except Exception:
+            return False
+
     def _set_running(self, running: bool) -> None:
         def _apply():
             st = "disabled" if running else "normal"
@@ -650,6 +773,32 @@ class App(tk.Tk):
             self.btn_erase_range.configure(state=st)
             self.btn_live.configure(state=st)
             self.btn_stop.configure(state=("normal" if running else "disabled"))
+            if not running:
+                self._set_stop_mode("none")
+                self._progress_reset()
+        self.after(0, _apply)
+
+    def _progress_reset(self) -> None:
+        def _apply():
+            self.progress.configure(mode="determinate", maximum=1.0)
+            self.progress_var.set(0.0)
+            self.progress_text_var.set("待機中")
+        self.after(0, _apply)
+
+    def _progress_begin(self, total_steps: int, text: str) -> None:
+        def _apply():
+            self._progress_total = max(1, int(total_steps))
+            self.progress.configure(mode="determinate", maximum=self._progress_total)
+            self.progress_var.set(0.0)
+            self.progress_text_var.set(text)
+        self.after(0, _apply)
+
+    def _progress_step(self, step: int, text: str) -> None:
+        def _apply():
+            self.progress.configure(mode="determinate", maximum=self._progress_total)
+            val = min(max(0, int(step)), int(self._progress_total))
+            self.progress_var.set(val)
+            self.progress_text_var.set(text)
         self.after(0, _apply)
 
     def _show_error(self, title: str, msg: str) -> None:
@@ -703,10 +852,15 @@ class App(tk.Tk):
         })
 
     def on_stop(self) -> None:
-        self.stop_flag.set()
-        self.log("[gui] stop requested. force-stopping active process (if any).")
-        if self.active_proc and (self.active_proc.poll() is None):
-            self._terminate_proc_tree(self.active_proc)
+        if self.stop_mode == "none":
+            self.log("[gui] stop requested. will stop after current step.")
+            self._set_stop_mode("soft")
+            return
+        if self.stop_mode == "soft":
+            self.log("[gui] force stop requested. terminating active process.")
+            self._set_stop_mode("force")
+            if self.active_proc and (self.active_proc.poll() is None):
+                self._terminate_proc_tree(self.active_proc)
 
     def _terminate_proc_tree(self, p: subprocess.Popen) -> None:
         """子プロセス（可能ならプロセスツリー）を強制終了"""
@@ -730,7 +884,13 @@ class App(tk.Tk):
                 pass
 
     # ----- subprocess runner -----
-    def _run_cmd_stream(self, cmd: list[str], cwd: str | None = None) -> int:
+    def _run_cmd_stream(
+        self,
+        cmd: list[str],
+        cwd: str | None = None,
+        *,
+        allow_soft_interrupt: bool = False,
+    ) -> int:
         """
         Run command and stream stdout/stderr to GUI log.
         """
@@ -779,10 +939,19 @@ class App(tk.Tk):
         threading.Thread(target=_reader, daemon=True).start()
 
         terminated = False
+        soft_signaled = False
         while True:
-            if self.stop_flag.is_set() and not terminated:
+            if self.stop_mode == "force" and not terminated:
                 terminated = True
                 self._terminate_proc_tree(p)
+
+            if (
+                allow_soft_interrupt
+                and (not soft_signaled)
+                and (self.stop_mode == "soft")
+            ):
+                soft_signaled = True
+                self._request_soft_stop(p)
 
             try:
                 item = OUT.get(timeout=0.1)
@@ -840,11 +1009,77 @@ class App(tk.Tk):
             self.log(f"[warn] cannot open preview automatically: {e}")
             self.log(f"[info] output: {video_path}")
 
+    def _export_browser_assets(self, mouthless_mp4: str, calib_npz: str) -> None:
+        if not os.path.isfile(mouthless_mp4):
+            self.log("[warn] ブラウザ用出力: 口消し動画が見つかりません。")
+            return
+        if not os.path.isfile(calib_npz):
+            self.log("[warn] ブラウザ用出力: mouth_track_calibrated.npz がありません。")
+            return
+
+        fps = None
+        try:
+            import numpy as np  # type: ignore
+            with np.load(calib_npz, allow_pickle=False) as npz:
+                if "fps" in npz:
+                    fps = float(npz["fps"])
+        except Exception as e:
+            self.log(f"[warn] ブラウザ用出力: fps取得に失敗しました: {e}")
+
+        if not fps or fps <= 0:
+            self.log("[warn] ブラウザ用出力: fpsが不明のためCFR変換をスキップします。")
+            fps = None
+
+        out_dir = os.path.dirname(os.path.abspath(mouthless_mp4))
+
+        try:
+            from convert_npz_to_json import convert_npz_to_json  # type: ignore
+            convert_npz_to_json(Path(calib_npz), Path(out_dir))
+            self.log(f"[info] ブラウザ用JSON出力: {os.path.join(out_dir, 'mouth_track.json')}")
+        except Exception as e:
+            self.log(f"[warn] ブラウザ用JSON出力に失敗しました: {e}")
+
+        if not fps:
+            return
+
+        ffmpeg = shutil.which("ffmpeg")
+        if not ffmpeg:
+            self.log("[warn] ブラウザ用出力: ffmpegが見つからないためH.264変換をスキップします。")
+            return
+
+        h264_mp4 = os.path.splitext(mouthless_mp4)[0] + "_h264.mp4"
+        cmd = [
+            ffmpeg,
+            "-y",
+            "-i",
+            mouthless_mp4,
+            "-vf",
+            f"fps={fps}",
+            "-r",
+            f"{fps}",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "fast",
+            "-crf",
+            "18",
+            "-pix_fmt",
+            "yuv420p",
+            h264_mp4,
+        ]
+        self.log("[cmd] " + " ".join(cmd))
+        rc = self._run_cmd_stream(cmd, cwd=HERE)
+        if rc != 0 or (not os.path.isfile(h264_mp4)):
+            self.log(f"[warn] ブラウザ用H.264変換に失敗しました (rc={rc})")
+        else:
+            self.log(f"[info] ブラウザ用H.264出力: {h264_mp4}")
+
     # ----- workflow buttons -----
     def _start_worker(self, target) -> None:
         if self.worker_thread and self.worker_thread.is_alive():
             return
         self.stop_flag.clear()
+        self._set_stop_mode("none")
         self._set_running(True)
         def runner():
             try:
@@ -886,6 +1121,8 @@ class App(tk.Tk):
                 track_npz = os.path.join(out_dir, "mouth_track.npz")
                 calib_npz = os.path.join(out_dir, "mouth_track_calibrated.npz")
 
+                self._progress_begin(2, "解析/キャリブ準備中…")
+
                 save_session({
                     "video": video,
                     "source_video": video,
@@ -896,6 +1133,7 @@ class App(tk.Tk):
                 })
 
                 self.log("\n=== [1/2] 解析（自動修復つき・最高品質） ===")
+                self._progress_step(1, "解析中… (1/2)")
                 cmd = [
                     sys.executable, os.path.join(base_dir, "auto_mouth_track_v2.py"),
                     "--video", video,
@@ -914,12 +1152,23 @@ class App(tk.Tk):
                 save_session({"smoothing": self.smoothing_menu_var.get()})
 
                 self.log("[cmd] " + " ".join(cmd))
-                rc = self._run_cmd_stream(cmd, cwd=base_dir)
+                rc = self._run_cmd_stream(
+                    cmd,
+                    cwd=base_dir,
+                    allow_soft_interrupt=True,
+                )
                 if rc != 0 or (not os.path.isfile(track_npz)):
                     self._show_error("失敗", f"解析に失敗しました (rc={rc})")
                     return
 
+                self._progress_step(1, "解析完了 (1/2)")
+                if self.stop_mode != "none":
+                    self.log("[info] 停止予約のため、キャリブ以降をスキップします。")
+                    self._progress_step(1, "解析完了 (1/2) - 停止予約")
+                    return
+
                 self.log("\n=== [2/2] キャリブレーション（画面を閉じると完了） ===")
+                self._progress_step(2, "キャリブ中… (2/2)")
                 cmd = [
                     sys.executable, os.path.join(base_dir, "calibrate_mouth_track.py"),
                     "--video", video,
@@ -928,7 +1177,11 @@ class App(tk.Tk):
                     "--out", calib_npz,
                 ]
                 self.log("[cmd] " + " ".join(cmd))
-                rc = self._run_cmd_stream(cmd, cwd=base_dir)
+                rc = self._run_cmd_stream(
+                    cmd,
+                    cwd=base_dir,
+                    allow_soft_interrupt=True,
+                )
                 if rc != 0 or (not os.path.isfile(calib_npz)):
                     self._show_error("失敗", f"キャリブに失敗しました (rc={rc})")
                     return
@@ -937,6 +1190,7 @@ class App(tk.Tk):
                     "track": track_npz,
                     "track_calibrated": calib_npz,
                 })
+                self._progress_step(2, "キャリブ完了 (2/2)")
                 self.log("\n完了（次は『② 口消し動画生成』）")
             except Exception as e:
                 self._show_error("エラー", str(e))
@@ -973,6 +1227,8 @@ class App(tk.Tk):
                 input_track = calib_npz if os.path.isfile(calib_npz) else track_npz
 
                 self.log("\n=== キャリブレーション（やり直し） ===")
+                self._progress_begin(1, "キャリブ準備中…")
+                self._progress_step(1, "キャリブ中… (1/1)")
                 if input_track == calib_npz:
                     self.log("[info] 既存のキャリブ済みトラックを使用（位置を維持）")
                 cmd = [
@@ -983,12 +1239,17 @@ class App(tk.Tk):
                     "--out", calib_npz,
                 ]
                 self.log("[cmd] " + " ".join(cmd))
-                rc = self._run_cmd_stream(cmd, cwd=base_dir)
+                rc = self._run_cmd_stream(
+                    cmd,
+                    cwd=base_dir,
+                    allow_soft_interrupt=True,
+                )
                 if rc != 0 or (not os.path.isfile(calib_npz)):
                     self._show_error("失敗", f"キャリブに失敗しました (rc={rc})")
                     return
 
                 save_session({"track": track_npz, "track_path": track_npz, "track_calibrated": calib_npz, "track_calibrated_path": calib_npz, "calib": calib_npz})
+                self._progress_step(1, "キャリブ完了 (1/1)")
                 self.log("\n完了")
             except Exception as e:
                 self._show_error("エラー", str(e))
@@ -1025,6 +1286,8 @@ class App(tk.Tk):
                 cov_arg = ",".join(f"{x:.2f}" for x in covs)
 
                 self.log("\n=== 口消し動画生成（自動候補->自動選別） ===")
+                self._progress_begin(1, "口消し準備中…")
+                self._progress_step(1, "口消し生成中… (1/1)")
                 cmd = [
                     sys.executable, os.path.join(base_dir, "auto_erase_mouth.py"),
                     "--video", video,
@@ -1041,6 +1304,7 @@ class App(tk.Tk):
                     self._show_error("失敗", f"口消し動画生成に失敗しました (rc={rc})")
                     return
 
+                self._progress_step(1, "口消し完了 (1/1)")
                 # runtime背景をmouthlessに更新
                 save_session({
                     "video": mouthless_mp4,      # runtime背景
@@ -1052,6 +1316,13 @@ class App(tk.Tk):
                     "pad": float(self.pad_var.get()),
                     "audio_device": int(self.audio_device_var.get()),
                 })
+
+                if self.stop_mode != "none":
+                    self.log("[info] 停止予約のため、ブラウザ用出力とプレビューをスキップします。")
+                    return
+
+                self.log("\n=== ブラウザ用データ出力 ===")
+                self._export_browser_assets(mouthless_mp4, calib_npz)
 
                 self.log("\nプレビューを起動します…")
                 self._open_video_preview(mouthless_mp4)
@@ -1384,8 +1655,11 @@ class App(tk.Tk):
                 else:
                     self.log("[warn] runtime が感情オートに未対応のため、従来モードで実行します。")
                 self.log("[cmd] " + " ".join(cmd))
-                rc = self._run_cmd_stream(cmd, cwd=base_dir)
+                self._progress_begin(1, "ライブ準備中…")
+                self._progress_step(1, "ライブ実行中…")
+                rc = self._run_cmd_stream(cmd, cwd=base_dir, allow_soft_interrupt=True)
                 self.log(f"\n[live] finished rc={rc}")
+                self._progress_step(1, "ライブ終了")
             except Exception as e:
                 self._show_error("エラー", str(e))
             finally:

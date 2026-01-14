@@ -30,7 +30,6 @@ try:
 except Exception:
     tk = None  # GUI unavailable
 from collections import deque
-from dataclasses import dataclass
 
 import cv2
 import numpy as np
@@ -44,11 +43,31 @@ except Exception:
     HAS_EMOTION_AUDIO = False
 
 import sounddevice as sd
-from PIL import Image
+
+# ========= Import from shared core module =========
+from lipsync_core import (
+    # Utility functions
+    one_pole_beta,
+    open_video_capture,
+    probe_video_size,
+    alpha_blit_rgb_safe,
+    warp_rgba_to_quad,
+    # Classes
+    MouthTrack,
+    BgVideo,
+    # Mouth sprite functions
+    load_mouth_sprites,
+    discover_mouth_sets,
+    # Emotion utilities
+    pick_mouth_set_for_label,
+    infer_label_from_set_name,
+    format_emotion_hud_text,
+    EMOJI_BY_LABEL,
+)
 
 HERE = os.path.abspath(os.path.dirname(__file__))
 LAST_SESSION_FILE = os.path.join(HERE, ".mouth_track_last_session.json")
-__VERSION__ = "v6-emotion-auto"
+__VERSION__ = "v7-shared-core"
 
 
 try:
@@ -59,70 +78,6 @@ except Exception:
     HAS_VCAM = False
 
 
-# ========= util =========
-def one_pole_beta(cutoff_hz: float, update_hz: int) -> float:
-    return float(1.0 - np.exp(-2.0 * np.pi * cutoff_hz / update_hz))
-
-
-def load_rgba(path: str) -> np.ndarray:
-    im = Image.open(path).convert("RGBA")
-    return np.array(im, dtype=np.uint8)
-
-
-def open_video_capture(path: str, retries: int = 25, delay_sec: float = 0.08) -> cv2.VideoCapture:
-    """
-    OpenCV VideoCapture を「少し待ってリトライ」しながら開く。
-    Windows で書き出し直後の mp4 を開くと失敗することがあるための対策。
-    """
-    # 利用可能なバックエンドを優先順で試す（無ければ無視）
-    backend_names = ["CAP_FFMPEG", "CAP_MSMF", "CAP_DSHOW"]
-    backends: list[int | None] = []
-    for name in backend_names:
-        v = getattr(cv2, name, None)
-        if isinstance(v, int):
-            backends.append(v)
-    backends.append(None)  # default
-
-    for _ in range(max(1, retries)):
-        for be in backends:
-            cap = None
-            try:
-                cap = cv2.VideoCapture(path) if be is None else cv2.VideoCapture(path, be)
-            except Exception:
-                continue
-
-            if cap is not None and cap.isOpened():
-                # "開けたけど読めない" もあるので 1フレーム読んで確認
-                ok, _ = cap.read()
-                if ok:
-                    cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-                    return cap
-                cap.release()
-            else:
-                try:
-                    cap.release()
-                except Exception:
-                    pass
-        time.sleep(delay_sec)
-
-    raise RuntimeError(f"Failed to open video (after retries): {path}")
-
-
-def probe_video_size(path: str) -> tuple[int, int] | None:
-    try:
-        cap = open_video_capture(path, retries=8, delay_sec=0.05)
-    except Exception:
-        return None
-    try:
-        w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
-        h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
-        if w > 0 and h > 0:
-            return (w, h)
-    finally:
-        cap.release()
-    return None
-
-
 def _parse_device_index(s: str) -> int | None:
     # "31: CABLE Output (...)" のような形式を想定
     try:
@@ -130,418 +85,6 @@ def _parse_device_index(s: str) -> int | None:
         return int(head)
     except Exception:
         return None
-
-
-def alpha_blit_rgb_safe(dst_rgb: np.ndarray, src_rgba: np.ndarray, x: int, y: int) -> None:
-    """dst_rgb(H,W,3) に src_rgba(h,w,4) を (x,y) にアルファ合成（はみ出し安全）"""
-    H, W = dst_rgb.shape[:2]
-    h, w = src_rgba.shape[:2]
-
-    x0 = max(x, 0)
-    y0 = max(y, 0)
-    x1 = min(x + w, W)
-    y1 = min(y + h, H)
-    if x0 >= x1 or y0 >= y1:
-        return
-
-    sx0 = x0 - x
-    sy0 = y0 - y
-    sx1 = sx0 + (x1 - x0)
-    sy1 = sy0 + (y1 - y0)
-
-    roi = dst_rgb[y0:y1, x0:x1]
-    src = src_rgba[sy0:sy1, sx0:sx1]
-
-    a = src[..., 3:4].astype(np.uint16)
-    inv = (255 - a).astype(np.uint16)
-    out = (src[..., :3].astype(np.uint16) * a + roi.astype(np.uint16) * inv) // 255
-    roi[:] = out.astype(np.uint8)
-
-
-def warp_rgba_to_quad(src_rgba: np.ndarray, quad_xy: np.ndarray) -> tuple[np.ndarray, int, int]:
-    """RGBA画像をquad(4,2)へ射影変換して、(patch_rgba, x0, y0) を返す。
-    返す patch は quad の外接 bbox サイズ。
-    """
-    quad = quad_xy.astype(np.float32)
-    xs = quad[:, 0]
-    ys = quad[:, 1]
-    x0 = int(np.floor(xs.min()))
-    y0 = int(np.floor(ys.min()))
-    x1 = int(np.ceil(xs.max()))
-    y1 = int(np.ceil(ys.max()))
-    bw = max(1, x1 - x0)
-    bh = max(1, y1 - y0)
-
-    dst_pts = (quad - np.array([x0, y0], dtype=np.float32))
-    h, w = src_rgba.shape[:2]
-    src_pts = np.array([[0, 0], [w - 1, 0], [w - 1, h - 1], [0, h - 1]], dtype=np.float32)
-    M = cv2.getPerspectiveTransform(src_pts, dst_pts)
-    patch = cv2.warpPerspective(
-        src_rgba,
-        M,
-        dsize=(bw, bh),
-        flags=cv2.INTER_LINEAR,
-        borderMode=cv2.BORDER_CONSTANT,
-        borderValue=(0, 0, 0, 0),
-    )
-    return patch, x0, y0
-
-
-def alpha_bbox(rgba: np.ndarray, thresh: int = 8) -> tuple | None:
-    """アルファチャンネルから非透明領域のbboxを取得"""
-    a = rgba[:, :, 3]
-    ys, xs = np.where(a > thresh)
-    if len(xs) == 0 or len(ys) == 0:
-        return None
-    x0, x1 = int(xs.min()), int(xs.max()) + 1
-    y0, y1 = int(ys.min()), int(ys.max()) + 1
-    return x0, y0, x1, y1
-
-
-# ========= data =========
-@dataclass
-class MouthTrack:
-    """frame_idx -> quad(4,2) を返す（ロード時にスケール適用）。"""
-
-    quads: np.ndarray          # (N,4,2) float32 (元)
-    valid: np.ndarray          # (N,) bool
-    quads_filled: np.ndarray   # (N,4,2) float32 (hold用に穴埋め済み)
-    has_any_valid: bool
-    total: int
-    policy: str                # "hold" or "strict"
-    src_w: int
-    src_h: int
-    calibrated: bool
-
-    @staticmethod
-    def _bbox_to_quad(bb: np.ndarray) -> np.ndarray:
-        # bbox: (N,4) = x,y,w,h
-        x, y, w, h = bb[:, 0], bb[:, 1], bb[:, 2], bb[:, 3]
-        quad = np.stack(
-            [
-                np.stack([x, y], axis=1),
-                np.stack([x + w, y], axis=1),
-                np.stack([x + w, y + h], axis=1),
-                np.stack([x, y + h], axis=1),
-            ],
-            axis=1,
-        ).astype(np.float32)
-        return quad
-
-    @staticmethod
-    def _make_filled(quads: np.ndarray, valid: np.ndarray) -> tuple[np.ndarray, bool]:
-        """validがある場合、前後でhold補間（前方埋め→先頭側を後方埋め）"""
-        N = int(quads.shape[0])
-        if N <= 0:
-            return quads.copy(), False
-        idxs = np.where(valid)[0]
-        if len(idxs) == 0:
-            return quads.copy(), False
-
-        filled = quads.copy()
-        # forward fill
-        last = idxs[0]
-        for i in range(0, N):
-            if valid[i]:
-                last = i
-            else:
-                filled[i] = filled[last]
-        # back fill for leading invalids
-        first = idxs[0]
-        for i in range(0, first):
-            filled[i] = filled[first]
-        return filled, True
-
-    @staticmethod
-    def load(path: str, target_w: int, target_h: int, policy: str = "hold") -> "MouthTrack | None":
-        if not path or (not os.path.isfile(path)):
-            return None
-
-        npz = np.load(path, allow_pickle=False)
-
-        if "quad" in npz:
-            quad = np.asarray(npz["quad"], dtype=np.float32)
-            if quad.ndim != 3 or quad.shape[1:] != (4, 2):
-                raise ValueError("mouth_track.npz: quad must be (N,4,2)")
-        elif "bbox" in npz:
-            bb = np.asarray(npz["bbox"], dtype=np.float32)
-            if bb.ndim != 2 or bb.shape[1] != 4:
-                raise ValueError("mouth_track.npz: bbox must be (N,4)")
-            quad = MouthTrack._bbox_to_quad(bb)
-        else:
-            raise ValueError("mouth_track.npz must contain 'quad' or 'bbox'")
-
-        N = int(quad.shape[0])
-        if "valid" in npz:
-            valid = np.asarray(npz["valid"], dtype=np.uint8).astype(bool)
-            if valid.shape[0] != N:
-                valid = np.ones((N,), dtype=bool)
-        else:
-            valid = np.ones((N,), dtype=bool)
-
-        src_w = int(npz["w"]) if "w" in npz else target_w
-        src_h = int(npz["h"]) if "h" in npz else target_h
-
-        # スケール合わせ
-        sx = float(target_w) / float(max(1, src_w))
-        sy = float(target_h) / float(max(1, src_h))
-        quad = quad.copy()
-        quad[..., 0] *= sx
-        quad[..., 1] *= sy
-
-        filled, has_any = MouthTrack._make_filled(quad, valid)
-        calibrated = ("calib_offset" in npz) or ("calib_scale" in npz) or ("calib_rotation" in npz)
-
-        return MouthTrack(
-            quads=quad,
-            valid=valid,
-            quads_filled=filled,
-            has_any_valid=has_any,
-            total=N,
-            policy=policy,
-            src_w=src_w,
-            src_h=src_h,
-            calibrated=calibrated,
-        )
-
-    def get_quad(self, frame_idx: int) -> np.ndarray | None:
-        if self.total <= 0:
-            return None
-        if not self.has_any_valid:
-            return None
-        idx = int(frame_idx) % self.total
-        if self.policy == "strict":
-            if not bool(self.valid[idx]):
-                return None
-            return self.quads[idx]
-        # hold
-        return self.quads_filled[idx]
-
-
-class BgVideo:
-    """OpenCV VideoCaptureでmp4をループ再生してRGBフレームを返す + frame_idx を持つ"""
-
-    def __init__(self, path: str, w: int, h: int):
-        # 書き出し直後の mp4 が開けないことがあるのでリトライ付きで開く
-        self.cap = open_video_capture(path, retries=25, delay_sec=0.08)
-
-        # 実際の動画サイズを取得
-        src_w = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH) or w)
-        src_h = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or h)
-
-        # 要求サイズと動画サイズのアスペクト比が異なる場合、
-        # 動画のアスペクト比を保持したサイズに補正する
-        req_aspect = w / max(1, h)
-        src_aspect = src_w / max(1, src_h)
-        if abs(req_aspect - src_aspect) > 0.01:
-            # アスペクト比が異なる: 動画のアスペクト比を優先
-            # 要求の幅を基準にして高さを調整
-            self.w = w
-            self.h = int(round(w / src_aspect))
-            print(f"[BgVideo] aspect ratio mismatch: requested {w}x{h}, video {src_w}x{src_h}, using {self.w}x{self.h}")
-        else:
-            self.w = w
-            self.h = h
-
-        fps = float(self.cap.get(cv2.CAP_PROP_FPS))
-        self.fps = fps if fps and fps > 1e-3 else 30.0
-
-        nframes = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
-        self.total_frames = nframes if nframes > 0 else 0
-        self.frame_idx = -1  # _read_one() が進めて 0 から始まる
-
-        self._acc = 0.0
-        self._last_t = time.perf_counter()
-        self._cached: np.ndarray | None = None
-
-        fr = self._read_one()
-        if fr is None:
-            raise RuntimeError(f"Failed to read first frame: {path}")
-        self._cached = fr
-
-    def _read_one(self) -> np.ndarray | None:
-        ret, bgr = self.cap.read()
-        if not ret:
-            self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-            self.frame_idx = -1
-            ret, bgr = self.cap.read()
-            if not ret:
-                return None
-
-        self.frame_idx += 1
-        if self.total_frames:
-            self.frame_idx %= self.total_frames
-
-        if bgr.shape[1] != self.w or bgr.shape[0] != self.h:
-            bgr = cv2.resize(bgr, (self.w, self.h), interpolation=cv2.INTER_AREA)
-        return cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
-
-    def get_frame(self, now: float) -> np.ndarray:
-        dt = now - self._last_t
-        self._last_t = now
-        self._acc += dt * self.fps
-        n = int(self._acc)
-        if n > 0:
-            self._acc -= n
-            for _ in range(n):
-                fr = self._read_one()
-                if fr is not None:
-                    self._cached = fr
-        assert self._cached is not None
-        return self._cached
-
-    def close(self) -> None:
-        try:
-            self.cap.release()
-        except Exception:
-            pass
-
-
-def load_mouth_sprites(mouth_dir: str, full_w: int, full_h: int) -> dict[str, np.ndarray]:
-    """
-    mouth_dir から口スプライトを読み込む。
-
-    互換性:
-    - 旧仕様: closed/half/open/u/e の5枚が必要
-    - 新仕様: 最低 open.png があれば動作（不足分は open.png から自動生成して代用）
-    """
-    required = {"open": "open.png"}
-    optional = {
-        "closed": "closed.png",
-        "half": "half.png",
-        "u": "u.png",
-        "e": "e.png",
-    }
-
-    def crop_full_canvas(rgba: np.ndarray, key: str) -> np.ndarray:
-        # フルキャンバスサイズ（動画と同じサイズ）の場合はアルファbboxでクロップ
-        if rgba.shape[0] == full_h and rgba.shape[1] == full_w:
-            bbox = alpha_bbox(rgba)
-            if bbox is not None:
-                x0, y0, x1, y1 = bbox
-                rgba = rgba[y0:y1, x0:x1].copy()
-                print(f"[sprite] {key}: cropped from full canvas to {rgba.shape[1]}x{rgba.shape[0]}")
-        return rgba
-
-    def variant_from_open(open_rgba: np.ndarray, key: str) -> np.ndarray:
-        # open.png から簡易的にバリエーションを作る（無いよりマシ）
-        h, w = open_rgba.shape[:2]
-        if key == "open":
-            return open_rgba
-
-        # (sx, sy): ざっくり形状を変える
-        if key == "half":
-            sx, sy = 1.00, 0.65
-        elif key == "closed":
-            sx, sy = 1.00, 0.25
-        elif key == "u":
-            sx, sy = 0.88, 0.55
-        elif key == "e":
-            sx, sy = 1.08, 0.55
-        else:
-            sx, sy = 1.00, 1.00
-
-        rw = max(2, int(round(w * sx)))
-        rh = max(2, int(round(h * sy)))
-        small = cv2.resize(open_rgba, (rw, rh), interpolation=cv2.INTER_AREA)
-
-        canvas = np.zeros((h, w, 4), dtype=np.uint8)
-        x0 = (w - rw) // 2
-        y0 = h - rh  # bottom anchor
-        canvas[y0:y0 + rh, x0:x0 + rw] = small
-
-        # "closed" は少し薄くして違和感を減らす
-        if key == "closed":
-            canvas[..., 3] = (canvas[..., 3].astype(np.float32) * 0.85).astype(np.uint8)
-
-        return canvas
-
-    sprites: dict[str, np.ndarray] = {}
-
-    # ---- required: open.png ----
-    open_path = os.path.join(mouth_dir, required["open"])
-    if not os.path.isfile(open_path):
-        raise FileNotFoundError(f"mouth sprite not found (required): {open_path}")
-    open_rgba = crop_full_canvas(load_rgba(open_path), "open")
-
-    sprites["open"] = open_rgba
-
-    # ---- optional files ----
-    for key, fn in optional.items():
-        p = os.path.join(mouth_dir, fn)
-        if os.path.isfile(p):
-            rgba = crop_full_canvas(load_rgba(p), key)
-            sprites[key] = rgba
-        else:
-            sprites[key] = variant_from_open(open_rgba, key)
-            print(f"[sprite] missing {fn} -> derived from open.png")
-
-    # 念のため: 全キーがあることを保証
-    for k in ["closed", "half", "open", "u", "e"]:
-        if k not in sprites:
-            sprites[k] = open_rgba
-
-    # サイズを揃える（warp行列を使い回す前提）
-    sizes = {(v.shape[1], v.shape[0]) for v in sprites.values()}
-    if len(sizes) != 1:
-        tw = max(s[0] for s in sizes)
-        th = max(s[1] for s in sizes)
-        out: dict[str, np.ndarray] = {}
-        for k, im in sprites.items():
-            if (im.shape[1], im.shape[0]) != (tw, th):
-                out[k] = cv2.resize(im, (tw, th), interpolation=cv2.INTER_AREA)
-            else:
-                out[k] = im
-        sprites = out
-        print(f"[sprite] resized all to common size: {tw}x{th}")
-
-    return sprites
-
-
-def _is_mouth_set_dir(p: str) -> bool:
-    """Return True if `p` looks like a mouth sprite-set directory."""
-    return os.path.isfile(os.path.join(p, "open.png"))
-
-
-def discover_mouth_sets(mouth_dir: str) -> dict[str, str]:
-    """
-    Discover mouth sprite sets.
-
-    Supported layouts:
-      A) Single set (backward compatible):
-         mouth_dir/
-            open.png (required)
-            closed.png / half.png / u.png / e.png (optional)
-
-      B) Emotion sets:
-         mouth_dir/
-            Happy/ (open.png required)
-            Sad/
-            Angry/
-            ...
-
-    Returns:
-        dict: {emotion_name: directory_path}
-    """
-    mouth_dir = os.path.abspath(mouth_dir)
-
-    sets: dict[str, str] = {}
-
-    # Root can itself be a set (backward compatible)
-    if _is_mouth_set_dir(mouth_dir):
-        sets["Default"] = mouth_dir
-
-    # Also support emotion-subfolder layout
-    if not os.path.isdir(mouth_dir):
-        return sets
-
-    for name in sorted(os.listdir(mouth_dir)):
-        p = os.path.join(mouth_dir, name)
-        if os.path.isdir(p) and _is_mouth_set_dir(p):
-            sets[name] = p
-            print(f"[discover] found emotion set: '{name}' -> {p}")
-
-    return sets
 
 
 def start_emotion_selector_gui(
@@ -630,6 +173,9 @@ def start_emotion_selector_gui(
 
 
 # ========= emotion auto / HUD =========
+# Note: EMOJI_BY_LABEL, pick_mouth_set_for_label, format_emotion_hud_text, infer_label_from_set_name
+# are now imported from lipsync_core
+
 EMOTION_PRESET_PARAMS = {
     # stable (配信向け): switch less
     "stable": dict(smooth_alpha=0.18, min_hold_sec=0.75, cand_stable_sec=0.30, switch_margin=0.14),
@@ -638,71 +184,6 @@ EMOTION_PRESET_PARAMS = {
     # snappy (ゲーム向け): switch more
     "snappy": dict(smooth_alpha=0.35, min_hold_sec=0.25, cand_stable_sec=0.12, switch_margin=0.06),
 }
-
-EMOJI_BY_LABEL = {
-    "neutral": "😐",
-    "happy": "😊",
-    "angry": "😠",
-    "sad": "😢",
-    "excited": "🤩",
-}
-
-
-def _norm_token(s: str) -> str:
-    return "".join(str(s).strip().lower().split())
-
-
-def pick_mouth_set_for_label(set_names: list[str], label: str) -> str | None:
-    """Map canonical emotion label -> available mouth set folder name (case-insensitive, partial match supported)."""
-    if not set_names:
-        return None
-    label = str(label).strip().lower()
-
-    # Common synonyms (include Japanese hints)
-    syn = {
-        "neutral": ["neutral", "default", "normal", "通常", "平常", "無感情", "ニュートラル"],
-        "happy": ["happy", "smile", "嬉", "楽", "ハッピー", "笑"],
-        "angry": ["angry", "mad", "怒", "イライラ"],
-        "sad": ["sad", "cry", "泣", "悲"],
-        "excited": ["excited", "excite", "fun", "party", "興奮", "ワクワク"],
-    }
-    wants = syn.get(label, [label])
-
-    # Exact / normalized match
-    low = { _norm_token(n): n for n in set_names }
-    for w in wants:
-        key = _norm_token(w)
-        if key in low:
-            return low[key]
-
-    # Partial match
-    for n in set_names:
-        nlow = _norm_token(n)
-        for w in wants:
-            if _norm_token(w) in nlow:
-                return n
-    return None
-
-
-def format_emotion_hud_text(label: str) -> str:
-    label = str(label).strip().lower()
-    emoji = EMOJI_BY_LABEL.get(label, "🙂")
-    return f"{emoji} {label}"
-
-
-def infer_label_from_set_name(set_name: str) -> str:
-    n = _norm_token(set_name)
-    if "happy" in n or "smile" in n or "嬉" in set_name or "楽" in set_name or "笑" in set_name:
-        return "happy"
-    if "angry" in n or "mad" in n or "怒" in set_name:
-        return "angry"
-    if "sad" in n or "cry" in n or "悲" in set_name or "泣" in set_name:
-        return "sad"
-    if "excited" in n or "excite" in n or "fun" in n or "興奮" in set_name or "ワクワク" in set_name:
-        return "excited"
-    if "neutral" in n or "default" in n or "normal" in n or "通常" in set_name or "平常" in set_name:
-        return "neutral"
-    return "neutral"
 
 
 def start_emotion_hud_gui(

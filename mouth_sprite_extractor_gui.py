@@ -7,7 +7,7 @@ mouth_sprite_extractor_gui.py
 
 機能:
 1. 動画を選択（ドラッグ&ドロップ対応）
-2. 解析ボタンで口トラッキング→10枚の候補を表示（口の開き具合順）
+2. 解析ボタンで口トラッキング→20枚の候補を表示（分類10枚＋開き始め連続10枚）
 3. 候補に1-5の数字を入力して手動割り当て
 4. 切り取り範囲（上下左右）とフェザー幅を別々に調整
 5. 「更新」ボタンでプレビュー更新、「出力」ボタンでPNG保存
@@ -66,7 +66,11 @@ from mouth_sprite_extractor import (
 # ---------------------------------------------------------------------------
 
 APP_TITLE = "Mouth Sprite Extractor"
-CANDIDATE_COUNT = 10  # 候補フレーム数
+BASE_CANDIDATE_COUNT = 10
+OPENING_SEQ_COUNT = 10
+CANDIDATE_COUNT = BASE_CANDIDATE_COUNT + OPENING_SEQ_COUNT  # 候補フレーム数
+CANDIDATE_ROWS = 2
+CANDIDATE_PER_ROW = (CANDIDATE_COUNT + CANDIDATE_ROWS - 1) // CANDIDATE_ROWS
 THUMB_SIZE = 70       # サムネイルサイズ
 PREVIEW_SIZE = 150    # プレビューサイズ（1.5倍に拡大）
 DEFAULT_FEATHER = 15
@@ -121,6 +125,60 @@ def numpy_to_photoimage(img_bgr: np.ndarray, size: int) -> Optional["ImageTk.Pho
     return ImageTk.PhotoImage(img)
 
 
+def pick_opening_sequence(
+    mouth_frames: List[MouthFrameInfo],
+    preselected: Optional[set[int]] = None,
+    window: int = OPENING_SEQ_COUNT,
+) -> List[MouthFrameInfo]:
+    """口の開き始めに近い連続フレームを選択する。"""
+    if window <= 0:
+        return []
+    n_frames = len(mouth_frames)
+    if n_frames < window:
+        return []
+
+    heights = np.array([mf.height for mf in mouth_frames], dtype=np.float32)
+    valid = np.array([mf.valid for mf in mouth_frames], dtype=bool)
+    if int(valid.sum()) < window:
+        return []
+
+    min_h = float(np.min(heights[valid]))
+    max_h = float(np.max(heights[valid]))
+    range_h = max(1e-6, max_h - min_h)
+    low_threshold = min_h + 0.3 * range_h
+    preselected = preselected or set()
+
+    def pick_window(require_rise: bool) -> Optional[int]:
+        best_start = None
+        best_score = -1e9
+        for start in range(0, n_frames - window + 1):
+            if not valid[start:start + window].all():
+                continue
+            start_h = heights[start]
+            end_h = heights[start + window - 1]
+            increase = end_h - start_h
+            if require_rise and increase <= 0:
+                continue
+            overlap = sum(
+                1 for i in range(start, start + window)
+                if mouth_frames[i].frame_idx in preselected
+            )
+            low_penalty = max(0.0, start_h - low_threshold)
+            score = increase - 0.5 * low_penalty - overlap * 0.1 * range_h
+            if score > best_score:
+                best_score = score
+                best_start = start
+        return best_start
+
+    best_start = pick_window(require_rise=True)
+    if best_start is None:
+        best_start = pick_window(require_rise=False)
+    if best_start is None:
+        return []
+
+    return [mouth_frames[i] for i in range(best_start, best_start + window)]
+
+
 def extract_sprite_with_crop(
     frame_bgr: np.ndarray,
     quad: np.ndarray,
@@ -141,7 +199,7 @@ def extract_sprite_with_crop(
     # 切り取り範囲を適用した楕円マスク
     # 楕円の中心をずらし、半径を調整
     # 上を削る = 楕円を下にずらす、下を削る = 楕円を上にずらす
-    cx = unified_w // 2 + (crop_right - crop_left) // 2
+    cx = unified_w // 2 + (crop_left - crop_right) // 2
     cy = unified_h // 2 + (crop_top - crop_bottom) // 2  # 方向を修正
     rx = (unified_w - crop_left - crop_right) // 2
     ry = (unified_h - crop_top - crop_bottom) // 2
@@ -202,9 +260,31 @@ class MouthSpriteExtractorApp(tk.Tk if not _HAS_TK_DND else TkinterDnD.Tk):
     
     def _build_ui(self):
         """UIを構築"""
-        # Main frame with padding
-        main_frame = ttk.Frame(self, padding=10)
-        main_frame.pack(fill=tk.BOTH, expand=True)
+        # Main scrollable area (for shorter screens)
+        container = ttk.Frame(self)
+        container.pack(fill=tk.BOTH, expand=True)
+
+        main_canvas = tk.Canvas(container, highlightthickness=0)
+        main_scroll = ttk.Scrollbar(
+            container, orient=tk.VERTICAL, command=main_canvas.yview
+        )
+        main_canvas.configure(yscrollcommand=main_scroll.set)
+        main_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        main_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        main_frame = ttk.Frame(main_canvas, padding=10)
+        main_window = main_canvas.create_window(
+            (0, 0), window=main_frame, anchor=tk.NW
+        )
+
+        main_frame.bind(
+            "<Configure>",
+            lambda e: main_canvas.configure(scrollregion=main_canvas.bbox("all")),
+        )
+        main_canvas.bind(
+            "<Configure>",
+            lambda e: main_canvas.itemconfigure(main_window, width=e.width),
+        )
         
         # --- Video selection ---
         video_frame = ttk.LabelFrame(main_frame, text="動画ファイル", padding=5)
@@ -229,15 +309,23 @@ class MouthSpriteExtractorApp(tk.Tk if not _HAS_TK_DND else TkinterDnD.Tk):
         self.analyze_btn.pack(fill=tk.X, pady=(0, 10))
         
         # --- Candidate frames area ---
-        cand_frame = ttk.LabelFrame(main_frame, text="候補フレーム（口の開き具合順）- 1-5の数字で割り当て", padding=5)
+        cand_frame = ttk.LabelFrame(
+            main_frame,
+            text="候補フレーム（分類10枚＋開き始め連続10枚）- 1-5の数字で割り当て",
+            padding=5,
+        )
         cand_frame.pack(fill=tk.X, pady=(0, 10))
-        
-        # Scrollable candidate area
-        cand_canvas = tk.Canvas(cand_frame, height=130)
+
+        # Candidate area
+        cand_canvas = tk.Canvas(cand_frame, height=260)
         cand_canvas.pack(fill=tk.X, expand=True)
-        
+
         self.cand_inner = ttk.Frame(cand_canvas)
         cand_canvas.create_window((0, 0), window=self.cand_inner, anchor=tk.NW)
+        self.cand_inner.bind(
+            "<Configure>",
+            lambda e: cand_canvas.configure(scrollregion=cand_canvas.bbox("all")),
+        )
         
         # Candidate slots
         self.cand_labels: List[ttk.Label] = []
@@ -245,9 +333,12 @@ class MouthSpriteExtractorApp(tk.Tk if not _HAS_TK_DND else TkinterDnD.Tk):
         self.cand_vars: List[tk.StringVar] = []
         self.cand_frame_labels: List[ttk.Label] = []
         
+        per_row = CANDIDATE_PER_ROW
         for i in range(CANDIDATE_COUNT):
+            row = i // per_row
+            col = i % per_row
             col_frame = ttk.Frame(self.cand_inner)
-            col_frame.pack(side=tk.LEFT, padx=3)
+            col_frame.grid(row=row, column=col, padx=3, pady=3, sticky=tk.N)
             
             # サムネイル
             thumb_label = ttk.Label(col_frame, text="", width=10, anchor=tk.CENTER, relief=tk.SUNKEN)
@@ -542,11 +633,25 @@ class MouthSpriteExtractorApp(tk.Tk if not _HAS_TK_DND else TkinterDnD.Tk):
             
             # すぼめた口（u候補）- 幅が小さい
             pick_by_score(widths, 2, maximize=False, label="u候補")
-            
+
+            # 口を開け始めた所から連続フレームを追加
+            preselected = {mf.frame_idx for mf, _ in candidates}
+            opening_seq = pick_opening_sequence(
+                self.extractor.mouth_frames,
+                preselected=preselected,
+                window=OPENING_SEQ_COUNT,
+            )
+            if opening_seq:
+                candidates.extend((mf, "opening連続") for mf in opening_seq)
+
             # 候補フレームを設定
             self.candidate_frames = [mf for mf, _ in candidates]
-            
-            self.log(f"候補選択: open候補2枚, closed候補2枚, half候補2枚, e候補2枚, u候補2枚")
+
+            self.log(
+                "候補選択: open候補2枚, closed候補2枚, half候補2枚, "
+                "e候補2枚, u候補2枚, 開き始め連続"
+                f"{len(opening_seq)}枚"
+            )
             
             # 統一サイズを計算（全有効フレームから）
             if valid_frames:
@@ -631,6 +736,9 @@ class MouthSpriteExtractorApp(tk.Tk if not _HAS_TK_DND else TkinterDnD.Tk):
             if val.isdigit():
                 num = int(val)
                 if 1 <= num <= 5:
+                    if i >= len(self.candidate_frames):
+                        self.log(f"警告: 候補が存在しないスロット({i+1})は無視します")
+                        continue
                     if num in assignments:
                         self.log(f"警告: {num}が重複しています")
                     assignments[num] = i
