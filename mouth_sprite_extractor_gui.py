@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import os
 import queue
+import subprocess
 import sys
 import threading
 import traceback
@@ -810,7 +811,12 @@ class MouthSpriteExtractorApp(tk.Tk if not _HAS_TK_DND else TkinterDnD.Tk):
             self.log(f"出力完了: {output_dir}")
             
             if messagebox.askyesno("完了", f"出力が完了しました。\n{output_dir}\n\nフォルダを開きますか？"):
-                os.startfile(output_dir)
+                if sys.platform.startswith("win"):
+                    os.startfile(output_dir)  # type: ignore[attr-defined]
+                elif sys.platform == "darwin":
+                    subprocess.Popen(["open", output_dir])
+                else:
+                    subprocess.Popen(["xdg-open", output_dir])
             
         except Exception as e:
             self.log(f"出力エラー: {e}")
