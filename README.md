@@ -128,7 +128,6 @@ cd deps
 curl -L https://github.com/open-mmlab/mmcv/archive/refs/tags/v1.7.0.tar.gz -o mmcv-1.7.0.tar.gz
 tar xzf mmcv-1.7.0.tar.gz && cd mmcv-1.7.0
 MMCV_WITH_OPS=1 FORCE_CUDA=0 ../../.venv/bin/python setup.py develop
-MMCV_WITH_OPS=1 FORCE_CUDA=0 ../../.venv/bin/python setup.py build_ext --inplace
 cd ../..
 ```
 
@@ -218,13 +217,34 @@ uv run python multi_video_live_gui.py
 <details>
 <summary><b>🎯 キャリブレーション操作</b></summary>
 
-### マウス操作
+### 編集モード（上部ボタン or キー）
+
+| モード | キー | 左ドラッグ動作 |
+|--------|------|---------------|
+| Move | `M` | 移動 |
+| Rotate | `R` | 回転 |
+| Scale | `S` | 均等拡縮 |
+| ScaleX | `X` | 横方向のみ拡縮 |
+| ScaleY | `Y` | 縦方向のみ拡縮 |
+
+### マウス操作（全モード共通）
 
 | 操作 | 機能 |
 |------|------|
-| 左ドラッグ | 移動 |
-| ホイール | 拡大・縮小 |
+| 左ドラッグ | モードに応じた編集 |
 | 右ドラッグ | 回転 |
+| 中ドラッグ | 画面パン |
+| ホイール | 拡大・縮小 |
+
+### 右パネル
+
+| ボタン | 機能 |
+|--------|------|
+| ズームスライダー | 画面ズーム（25%〜400%） |
+| 十字ボタン | パンモード切替 |
+| `H` | ビューをリセット |
+| `<` | Undo（元に戻す） |
+| `>` | Redo（やり直し） |
 
 ### キーボード操作
 
@@ -232,9 +252,12 @@ uv run python multi_video_live_gui.py
 |------|------|
 | 矢印キー | 微移動 |
 | `+`/`-` | 拡大・縮小 |
-| `z`/`x` | 回転 |
-| `Space` | 確定 |
-| `Esc` | キャンセル |
+| `<`/`>` | 回転微調整 |
+| `[`/`]` | フレーム切替 |
+| `Backspace` | 変換値リセット |
+| `Home` | ビューリセット |
+| `Enter` | 確定 |
+| `Esc`/`q` | キャンセル |
 
 </details>
 
