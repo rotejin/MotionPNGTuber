@@ -302,6 +302,10 @@ def run(args) -> None:
     # ---- audio device ----
     samplerate = 48000
     input_channels = 1
+    # Linux: 無効なデバイス index を PulseAudio 経由で補正
+    from audio_linux import prepare_device
+    args.device = prepare_device(args.device, sd)
+
     if args.device is not None:
         dev = sd.query_devices(args.device, "input")
         samplerate = int(dev["default_samplerate"])

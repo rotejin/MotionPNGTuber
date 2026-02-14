@@ -87,6 +87,9 @@ def _try_list_input_devices() -> list[tuple[int, str]]:
                 ch = int(d.get("max_input_channels", 0))
                 sr = int(float(d.get("default_samplerate", 0)) or 0)
                 devices.append((i, f"{i}: {name}  (ch={ch}, sr={sr})"))
+        # Linux: PulseAudio 入力ソースを追加
+        from audio_linux import add_device_list_linux
+        devices = add_device_list_linux(devices, sd)
         return devices
     except Exception:
         return []
@@ -627,6 +630,14 @@ class App(tk.Tk):
 
         def _on_select(_evt=None):
             s = self.audio_device_menu_var.get()
+            # Linux: PulseAudio デバイス (pa:...) の処理
+            from audio_linux import handle_pa_device_selection
+            import sounddevice as _sd
+            pa_idx = handle_pa_device_selection(s, _sd)
+            if pa_idx is not None:
+                self.audio_device_var.set(pa_idx)
+                save_session({"audio_device": s})
+                return
             try:
                 n = int(s.split(":", 1)[0].strip())
                 self.audio_device_var.set(n)

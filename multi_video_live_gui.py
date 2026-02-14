@@ -1793,6 +1793,10 @@ class MultiVideoLiveApp(tk.Tk):
         except Exception as e:
             self._log(f"オーディオデバイス取得エラー: {e}")
 
+        # Linux: PulseAudio 入力ソースを追加
+        from audio_linux import add_audio_device_linux_str
+        devices = add_audio_device_linux_str(devices, sd)
+
         self.audio_combo["values"] = devices
         if devices and not self.audio_device_var.get():
             self.audio_device_var.set(devices[0])
@@ -2086,7 +2090,13 @@ class MultiVideoLiveApp(tk.Tk):
         try:
             audio_str = self.audio_device_var.get()
             if audio_str:
-                audio_device = int(audio_str.split(":")[0])
+                # Linux: PulseAudio デバイス (pa:...) の処理
+                from audio_linux import handle_pa_device_selection
+                pa_idx = handle_pa_device_selection(audio_str, sd)
+                if pa_idx is not None:
+                    audio_device = pa_idx
+                else:
+                    audio_device = int(audio_str.split(":")[0])
         except Exception:
             pass
         if audio_device is None:
