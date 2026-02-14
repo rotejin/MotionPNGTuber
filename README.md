@@ -23,6 +23,7 @@
 | 🌐 ブラウザ版 | Python不要の軽量版、OBSで直接使用可能 |
 | 🎬 複数動画切り替え | 複数モーションをボタンで瞬時に切替 |
 | 🍎 macOS対応 | Apple Silicon (M1/M2/M3/M4) で動作 |
+| 🐧 Ubuntu対応 | Ubuntu 22.04 LTS (x86_64, CUDA) で動作 |
 
 ---
 
@@ -32,6 +33,7 @@
 - [インストール](#-インストール)
   - [Windows](#windows)
   - [macOS (実験的)](#macos-実験的)
+  - [Ubuntu (実験的)](#ubuntu-実験的)
 - [使い方](#-使い方)
   - [メインGUI](#メインgui)
   - [ブラウザ版プレイヤー](#-ブラウザ版プレイヤー)
@@ -152,6 +154,50 @@ uv pip install mmdet==2.28.0 mmpose==0.29.0
 
 </details>
 
+### Ubuntu (実験的)
+
+<details>
+<summary><b>クリックして展開（Ubuntu 22.04 LTS, x86_64, NVIDIA GPU）</b></summary>
+
+#### 1. 前提条件
+
+- Ubuntu 22.04 LTS (x86_64)
+- NVIDIA GPU + CUDA 11.7 対応ドライバ (確認済み : 570.172.08)
+- uv:
+  ```bash
+  curl -LsSf https://astral.sh/uv/install.sh | sh
+  ```
+
+#### 2. システムパッケージ
+
+```bash
+sudo apt-get install -y libportaudio2
+```
+
+#### 3. インストール
+
+```bash
+uv sync
+```
+
+#### 4. 確認
+
+```bash
+uv run python -c "import cv2; import torch; print('OK')"
+```
+
+#### 5. 起動
+
+```bash
+uv run python mouth_track_gui.py
+```
+
+#### 注意事項
+
+- **オーディオデバイス**: USB マイク等が sounddevice のデバイス一覧に表示されない場合があります。PulseAudio 経由で自動補完されるため、GUI のデバイス一覧で `pa:...  (via pulse)` と表示されるデバイスを選択してください。
+
+</details>
+
 ---
 
 ## 🎮 使い方
@@ -269,8 +315,9 @@ MotionPNGTuber/
 ├── convert_npz_to_json.py          # npz→JSON変換
 ├── lipsync_core.py                 # 共通モジュール
 ├── MotionPNGTuber_Player/          # ブラウザ版
-├── pyproject.toml                  # 依存関係（Windows）
+├── pyproject.toml                  # 依存関係（Windows / Ubuntu）
 ├── pyproject.macos.toml            # 依存関係（macOS）
+├── audio_linux.py                  # Linux オーディオ補助
 └── mouth_dir/                      # 口スプライト
 ```
 
