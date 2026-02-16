@@ -355,7 +355,7 @@ def extract_mouth_sprite(
 ) -> np.ndarray:
     """
     フレームから口スプライトを抽出する。
-    
+
     Args:
         frame_bgr: 入力フレーム（BGR）
         quad: 口のquad (4, 2)
@@ -363,26 +363,29 @@ def extract_mouth_sprite(
         unified_h: 出力高さ
         feather_px: フェザー幅（ピクセル）
         mask_scale: マスクの楕円サイズ（0.0-1.0）
-    
+
     Returns:
         rgba: (H, W, 4) uint8 - 透過PNG用
     """
     # 正規化空間に変換
-    patch = warp_frame_to_norm(frame_bgr, quad, unified_w, unified_h)
-    
+    patch_bgr = warp_frame_to_norm(frame_bgr, quad, unified_w, unified_h)
+
+    # BGR -> RGB に変換して、RGBAとして格納する
+    patch_rgb = cv2.cvtColor(patch_bgr, cv2.COLOR_BGR2RGB)
+
     # 楕円マスク生成
     rx = int((unified_w * mask_scale) * 0.5)
     ry = int((unified_h * mask_scale) * 0.5)
     mask_u8 = make_ellipse_mask(unified_w, unified_h, rx, ry)
-    
+
     # フェザー適用
     mask_f = feather_mask(mask_u8, feather_px)
-    
+
     # RGBA画像を生成
     rgba = np.zeros((unified_h, unified_w, 4), dtype=np.uint8)
-    rgba[:, :, :3] = patch
+    rgba[:, :, :3] = patch_rgb
     rgba[:, :, 3] = (mask_f * 255).astype(np.uint8)
-    
+
     return rgba
 
 
