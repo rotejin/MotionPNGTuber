@@ -714,13 +714,29 @@ def run(args) -> None:
                             U_TH = float(np.percentile(cent_open, 20))
                             E_TH = float(np.percentile(cent_open, 80))
 
-                # mouth level
-                if env < HALF_TH:
-                    mouth_level = "closed"
-                elif env < OPEN_TH:
-                    mouth_level = "half"
-                else:
-                    mouth_level = "open"
+                # mouth level (with hysteresis deadband to prevent bouncing)
+                _deadband = 0.04
+                if not hasattr(run, '_prev_mouth_level'):
+                    run._prev_mouth_level = "closed"
+                _pml = run._prev_mouth_level
+                if _pml == "closed":
+                    if env >= HALF_TH + _deadband:
+                        mouth_level = "half" if env < OPEN_TH else "open"
+                    else:
+                        mouth_level = "closed"
+                elif _pml == "half":
+                    if env < HALF_TH - _deadband:
+                        mouth_level = "closed"
+                    elif env >= OPEN_TH + _deadband:
+                        mouth_level = "open"
+                    else:
+                        mouth_level = "half"
+                else:  # open
+                    if env < OPEN_TH - _deadband:
+                        mouth_level = "half" if env >= HALF_TH else "closed"
+                    else:
+                        mouth_level = "open"
+                run._prev_mouth_level = mouth_level
 
                 # vowel selection on peaks
                 if mouth_level == "open":
@@ -763,9 +779,12 @@ def run(args) -> None:
             # ---- preview ----
             frp = vid_prev.get_frame(now).copy()
             draw_one(frp, vid_prev.frame_idx, track_prev, args.preview_scale)
-            cv2.imshow(window_name, cv2.cvtColor(frp, cv2.COLOR_RGB2BGR))
-            if cv2.waitKey(1) & 0xFF == ord("q"):
-                break
+            try:
+                cv2.imshow(window_name, cv2.cvtColor(frp, cv2.COLOR_RGB2BGR))
+                if cv2.waitKey(1) & 0xFF == ord("q"):
+                    break
+            except cv2.error:
+                pass  # suppress GIL race condition with audio thread on macOS
 
             # ---- virtual cam ----
             if cam is not None and vid_full is not None:

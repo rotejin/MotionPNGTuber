@@ -547,14 +547,16 @@ def load_mouth_sprites(mouth_dir: str, full_w: int, full_h: int) -> dict[str, np
         else:
             sx, sy = 1.00, 1.00
 
-        rw = max(2, int(round(w * sx)))
-        rh = max(2, int(round(h * sy)))
+        rw = max(2, min(int(round(w * sx)), w))  # clamp to canvas width
+        rh = max(2, min(int(round(h * sy)), h))  # clamp to canvas height
         small = cv2.resize(open_rgba, (rw, rh), interpolation=cv2.INTER_AREA)
 
         canvas = np.zeros((h, w, 4), dtype=np.uint8)
-        x0 = (w - rw) // 2
-        y0 = h - rh
-        canvas[y0:y0 + rh, x0:x0 + rw] = small
+        x0 = max(0, (w - rw) // 2)
+        y0 = max(0, (h - rh) // 2)  # center vertically to prevent bouncing
+        paste_w = min(rw, w - x0)
+        paste_h = min(rh, h - y0)
+        canvas[y0:y0 + paste_h, x0:x0 + paste_w] = small[:paste_h, :paste_w]
 
         if key == "closed":
             canvas[..., 3] = (canvas[..., 3].astype(np.float32) * 0.85).astype(np.uint8)
