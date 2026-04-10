@@ -1,0 +1,61 @@
+# =============================================================================
+# MotionPNGTuber - macOS (Apple Silicon) 用 pyproject.toml
+# =============================================================================
+#
+# インストール手順:
+#   1. cp pyproject.toml pyproject.win.toml && cp pyproject.macos.toml pyproject.toml
+#   2. uv venv .venv && uv sync
+#   3. uv pip install pip setuptools wheel torch==2.0.1 torchvision==0.15.2
+#   4. xtcocotoolsをソースからビルド（PyPI版はビルドエラーになるため先に入れる）:
+#      mkdir -p deps && cd deps
+#      git clone https://github.com/jin-s13/xtcocoapi.git
+#      cd xtcocoapi
+#      ../../.venv/bin/python -m pip install -e .
+#      cd ../..
+#   5. mmcv-fullをソースからビルド（ビルド済みバイナリがないため）:
+#      cd deps
+#      curl -L https://github.com/open-mmlab/mmcv/archive/refs/tags/v1.7.0.tar.gz -o mmcv-1.7.0.tar.gz
+#      tar xzf mmcv-1.7.0.tar.gz
+#      cd mmcv-1.7.0
+#      MMCV_WITH_OPS=1 FORCE_CUDA=0 ../../.venv/bin/python setup.py develop
+#      MMCV_WITH_OPS=1 FORCE_CUDA=0 ../../.venv/bin/python setup.py build_ext --inplace
+#      cd ../..
+#   6. anime-face-detectorをインストール（xtcocotools/mmcvは既にあるのでスキップされる）:
+#      （--no-build-isolation: chumpy等のビルドに仮想環境のpipが必要なため）
+#      uv pip install --no-build-isolation anime-face-detector
+#   7. mmdet/mmposeを正しいバージョンに修正（anime-face-detectorが最新版を入れてしまうため）:
+#      uv pip install mmdet==2.28.0 mmpose==0.29.0
+#   8. .venv/bin/python mouth_track_gui.py
+#
+# 注意:
+#   - deps/ ディレクトリは削除しないこと（editable installのため参照される）
+#   - PyTorchは2.0.1を使用（最新版はmmcv 1.7.0と互換性がない）
+#
+# =============================================================================
+
+[project]
+name = "motionpngtuber"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = "==3.10.*"
+dependencies = [
+    # 基本パッケージ（uv syncでインストール）
+    "numpy>=1.24.0,<2.0.0",
+    "opencv-python>=4.8.0",
+    "pillow>=10.0.0",
+    "scipy>=1.10.0",
+    "sounddevice>=0.4.6",
+    # 以下は手動インストール（手順2-5参照）:
+    # - pip, setuptools, wheel
+    # - torch==2.0.1, torchvision==0.15.2
+    # - anime-face-detector, mmdet==2.28.0, mmpose==0.29.0
+    # - mmcv-full (ソースビルド)
+    # - xtcocotools (ソースビルド)
+]
+
+[tool.uv]
+override-dependencies = [
+    # headless版を無効化してGUI版のopencv-pythonを使用
+    "opencv-python-headless>=4.5.4.58 ; sys_platform == 'never'",
+]
