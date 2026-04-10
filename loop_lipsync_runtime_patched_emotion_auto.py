@@ -24,6 +24,7 @@ import sys
 import threading
 import time
 import queue
+from dataclasses import dataclass
 
 try:
     import tkinter as tk
@@ -33,6 +34,15 @@ from collections import deque
 
 import cv2
 import numpy as np
+from mouth_color_adjust import (
+    MouthColorAdjust,
+    apply_inspect_boost_3ch,
+    apply_mouth_color_adjust_4ch,
+    clamp_mouth_color_adjust,
+    estimate_auto_mouth_color_adjust,
+    sample_background_ring_mean_3ch,
+    sample_colored_edge_mean_4ch,
+)
 
 # (optional) lightweight audio-only emotion analyzer (numpy only)
 try:
@@ -43,13 +53,21 @@ except Exception:
     HAS_EMOTION_AUDIO = False
 
 import sounddevice as sd
+from audio_linux import (
+    cleanup_audio_device_resolution,
+    normalize_audio_device_spec,
+    resolve_audio_device_spec,
+    apply_audio_resolution_for_current_process,
+)
 
 # ========= Import from shared core module =========
 from lipsync_core import (
+    AudioChunkBuffer,
     # Utility functions
     one_pole_beta,
     open_video_capture,
     probe_video_size,
+    resolve_preferred_track_path,
     alpha_blit_rgb_safe,
     warp_rgba_to_quad,
     # Classes
@@ -68,6 +86,7 @@ from lipsync_core import (
 HERE = os.path.abspath(os.path.dirname(__file__))
 LAST_SESSION_FILE = os.path.join(HERE, ".mouth_track_last_session.json")
 __VERSION__ = "v7-shared-core"
+MOUTH_LEVEL_DEADBAND = 0.04
 
 
 try:
@@ -85,6 +104,312 @@ def _parse_device_index(s: str) -> int | None:
         return int(head)
     except Exception:
         return None
+
+
+def classify_mouth_level_with_hysteresis(
+    env: float,
+    half_th: float,
+    open_th: float,
+    prev_level: str = "closed",
+    *,
+    deadband: float = MOUTH_LEVEL_DEADBAND,
+) -> str:
+    """しきい値境界の往復で口形が暴れないようにヒステリシスをかける。"""
+    env = float(env)
+    half_th = float(half_th)
+    open_th = float(open_th)
+    deadband = max(0.0, float(deadband))
+    prev = prev_level if prev_level in {"closed", "half", "open"} else "closed"
+
+    if prev == "closed":
+        if env >= half_th + deadband:
+            return "half" if env < open_th else "open"
+        return "closed"
+    if prev == "half":
+        if env < half_th - deadband:
+            return "closed"
+        if env >= open_th + deadband:
+            return "open"
+        return "half"
+    if env < open_th - deadband:
+        return "half" if env >= half_th else "closed"
+    return "open"
+
+
+def _show_preview_frame(window_name: str, frame_rgb: np.ndarray) -> int:
+    """プレビュー描画。macOS などで OpenCV GUI が不安定でもランタイムを止めない。"""
+    try:
+        cv2.imshow(window_name, cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR))
+        return int(cv2.waitKey(1) & 0xFF)
+    except cv2.error:
+        return -1
+
+
+def _matches_ipc_token(data: dict, session_token: str) -> bool:
+    if not session_token:
+        return True
+    return str(data.get("session_token", "") or "").strip() == session_token
+
+
+def _load_live_color_control(path: str, session_token: str = "") -> tuple[float, MouthColorAdjust] | None:
+    if not path or (not os.path.isfile(path)):
+        return None
+    with open(path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    if not isinstance(data, dict) or not _matches_ipc_token(data, session_token):
+        return None
+    updated_at = float(data.get("updated_at", 0.0) or 0.0)
+    cfg = clamp_mouth_color_adjust(
+        MouthColorAdjust(
+            brightness=float(data.get("mouth_brightness", 0.0)),
+            saturation=float(data.get("mouth_saturation", 1.0)),
+            warmth=float(data.get("mouth_warmth", 0.0)),
+            color_strength=float(data.get("mouth_color_strength", 0.75)),
+            edge_priority=float(data.get("mouth_edge_priority", 0.85)),
+            edge_width_ratio=float(data.get("mouth_edge_width_ratio", 0.10)),
+            inspect_boost=float(data.get("mouth_inspect_boost", 1.0)),
+        ),
+    )
+    return updated_at, cfg
+
+
+def _load_auto_color_request(path: str, session_token: str = "") -> tuple[str, float] | None:
+    if not path or (not os.path.isfile(path)):
+        return None
+    with open(path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    if not isinstance(data, dict) or not _matches_ipc_token(data, session_token):
+        return None
+    request_id = str(data.get("request_id", "") or "").strip()
+    if not request_id:
+        return None
+    requested_at = float(data.get("requested_at", 0.0) or 0.0)
+    return request_id, requested_at
+
+
+def _write_json_atomic(path: str, payload: dict) -> None:
+    out_path = os.path.abspath(path)
+    out_dir = os.path.dirname(out_path) or HERE
+    os.makedirs(out_dir, exist_ok=True)
+    tmp_path = os.path.join(out_dir, f".tmp_{time.time_ns()}.json")
+    try:
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+        os.replace(tmp_path, out_path)
+    finally:
+        try:
+            if os.path.exists(tmp_path):
+                os.unlink(tmp_path)
+        except Exception:
+            pass
+
+
+def _rebuild_adjusted_mouth_sets(
+    mouth_sets_original: dict[str, dict[str, np.ndarray]],
+    cfg: MouthColorAdjust,
+) -> dict[str, dict[str, np.ndarray]]:
+    return {
+        emo_name: {
+            key: apply_mouth_color_adjust_4ch(val, cfg, color_order="RGBA")
+            for key, val in mouth_map.items()
+        }
+        for emo_name, mouth_map in mouth_sets_original.items()
+    }
+
+
+def _rebuild_runtime_mouth_color_sets(
+    mouth_sets_original: dict[str, dict[str, np.ndarray]],
+    cfg: MouthColorAdjust,
+    *,
+    inspect_levels: tuple[float, ...],
+) -> tuple[dict[str, dict[str, np.ndarray]], MouthColorAdjust, float, float]:
+    reload_t0 = time.perf_counter()
+    mouth_sets = _rebuild_adjusted_mouth_sets(mouth_sets_original, cfg)
+    inspect_boost = min(inspect_levels, key=lambda x: abs(x - float(cfg.inspect_boost)))
+    reload_dt = time.perf_counter() - reload_t0
+    return mouth_sets, cfg, inspect_boost, reload_dt
+
+
+def _select_runtime_mouth_view(
+    mouth_sets: dict[str, dict[str, np.ndarray]],
+    current_emotion: str,
+) -> tuple[str, dict[str, np.ndarray]]:
+    if current_emotion in mouth_sets:
+        next_emotion = current_emotion
+    else:
+        next_emotion = sorted(mouth_sets.keys())[0]
+    return next_emotion, mouth_sets[next_emotion]
+
+
+@dataclass(frozen=True)
+class MouthColorRebuildResult:
+    updated_at: float
+    cfg: MouthColorAdjust
+    mouth_sets: dict[str, dict[str, np.ndarray]]
+    inspect_boost: float
+    reload_dt: float
+    reason: str
+
+
+class AsyncMouthColorRebuilder:
+    def __init__(
+        self,
+        mouth_sets_original: dict[str, dict[str, np.ndarray]],
+        inspect_levels: tuple[float, ...],
+    ) -> None:
+        self._mouth_sets_original = mouth_sets_original
+        self._inspect_levels = inspect_levels
+        self._lock = threading.Lock()
+        self._wake = threading.Event()
+        self._stop = False
+        self._pending: tuple[float, MouthColorAdjust, str] | None = None
+        self._ready: MouthColorRebuildResult | None = None
+        self._thread = threading.Thread(
+            target=self._run,
+            name="mouth-color-rebuilder",
+            daemon=True,
+        )
+        self._thread.start()
+
+    def submit(self, *, updated_at: float, cfg: MouthColorAdjust, reason: str) -> None:
+        with self._lock:
+            self._pending = (float(updated_at), cfg, str(reason))
+            self._wake.set()
+
+    def pop_ready(self) -> MouthColorRebuildResult | None:
+        with self._lock:
+            ready = self._ready
+            self._ready = None
+            return ready
+
+    def close(self) -> None:
+        with self._lock:
+            self._stop = True
+            self._wake.set()
+        self._thread.join(timeout=1.0)
+
+    def _run(self) -> None:
+        while True:
+            self._wake.wait(0.1)
+            with self._lock:
+                if self._stop and self._pending is None:
+                    return
+                request = self._pending
+                self._pending = None
+                self._wake.clear()
+            if request is None:
+                continue
+            updated_at, cfg, reason = request
+            mouth_sets, _cfg, inspect_boost, reload_dt = _rebuild_runtime_mouth_color_sets(
+                self._mouth_sets_original,
+                cfg,
+                inspect_levels=self._inspect_levels,
+            )
+            result = MouthColorRebuildResult(
+                updated_at=updated_at,
+                cfg=cfg,
+                mouth_sets=mouth_sets,
+                inspect_boost=inspect_boost,
+                reload_dt=reload_dt,
+                reason=reason,
+            )
+            with self._lock:
+                pending = self._pending
+                if pending is not None and float(pending[0]) > updated_at:
+                    self._wake.set()
+                    continue
+                self._ready = result
+
+
+def _apply_runtime_mouth_color_update(
+    mouth_sets_original: dict[str, dict[str, np.ndarray]],
+    cfg: MouthColorAdjust,
+    *,
+    current_emotion: str,
+    inspect_levels: tuple[float, ...],
+) -> tuple[dict[str, dict[str, np.ndarray]], MouthColorAdjust, float, str, dict[str, np.ndarray], float]:
+    mouth_sets, cfg, inspect_boost, reload_dt = _rebuild_runtime_mouth_color_sets(
+        mouth_sets_original,
+        cfg,
+        inspect_levels=inspect_levels,
+    )
+    next_emotion, mouth = _select_runtime_mouth_view(mouth_sets, current_emotion)
+    return mouth_sets, cfg, inspect_boost, next_emotion, mouth, reload_dt
+
+
+def _estimate_auto_color_result(
+    frame_rgb: np.ndarray,
+    spr_rgba: np.ndarray,
+    *,
+    x0: int,
+    y0: int,
+    current_cfg: MouthColorAdjust,
+) -> dict | None:
+    mouth_sample = sample_colored_edge_mean_4ch(
+        spr_rgba,
+        edge_width_ratio=current_cfg.edge_width_ratio,
+        color_order="RGBA",
+        alpha_threshold=24,
+    )
+    if mouth_sample is None:
+        return None
+    mouth_mean, mouth_count = mouth_sample
+    bg_sample = sample_background_ring_mean_3ch(
+        frame_rgb,
+        spr_rgba[..., 3],
+        x0,
+        y0,
+        edge_width_ratio=current_cfg.edge_width_ratio,
+        color_order="RGB",
+        alpha_threshold=24,
+    )
+    if bg_sample is None:
+        return None
+    bg_mean, bg_count = bg_sample
+    new_cfg, debug = estimate_auto_mouth_color_adjust(
+        current_cfg,
+        bg_mean=bg_mean,
+        mouth_mean=mouth_mean,
+        color_order="RGB",
+    )
+    return {
+        "cfg": new_cfg,
+        "bg_sample_count": int(bg_count),
+        "mouth_sample_count": int(mouth_count),
+        "debug": debug,
+    }
+
+
+def _compose_mouth_patch(
+    mouth_set: dict[str, np.ndarray],
+    mouth_shape: str,
+    frame_idx: int,
+    track: MouthTrack | None,
+    scale: float,
+    fixed_x: int,
+    fixed_y: int,
+) -> dict[str, object]:
+    spr = mouth_set.get(mouth_shape, mouth_set["closed"])
+    quad = track.get_quad(frame_idx) if track is not None else None
+    if quad is None:
+        x = int(fixed_x * scale - spr.shape[1] // 2)
+        y = int(fixed_y * scale - spr.shape[0] // 2)
+        patch = spr
+        return {
+            "sprite": spr,
+            "patch": patch,
+            "x0": x,
+            "y0": y,
+            "quad": None,
+        }
+    patch, x0, y0 = warp_rgba_to_quad(spr, quad)
+    return {
+        "sprite": spr,
+        "patch": patch,
+        "x0": x0,
+        "y0": y0,
+        "quad": quad,
+    }
 
 
 def start_emotion_selector_gui(
@@ -242,9 +567,41 @@ def start_emotion_hud_gui(
 
 
 def resolve_track_path(base_track: str, calibrated_track: str, prefer_calibrated: bool = True) -> str:
-    if prefer_calibrated and calibrated_track and os.path.isfile(calibrated_track):
-        return calibrated_track
-    return base_track
+    return resolve_preferred_track_path(
+        base_track,
+        calibrated_track,
+        prefer_calibrated=prefer_calibrated,
+    )
+
+
+def resolve_emotion_auto_target(
+    lab: object,
+    info: dict[str, float],
+    emotions: list[str],
+    neutral_set: str,
+    *,
+    silence_db: float,
+    min_conf: float,
+) -> tuple[str | None, str | None, str]:
+    """Resolve the target emotion set for one analyzer output.
+
+    Returns ``(target_label, target_set, reason)`` where ``reason`` is one of
+    ``"silence"``, ``"unvoiced"``, ``"low_conf"``, or ``"label"``.
+    """
+    rms_db = float(info.get("rms_db", -120.0))
+    conf = float(info.get("confidence", 0.0))
+    voiced = float(info.get("voiced", 0.0)) >= 0.5
+
+    if rms_db < float(silence_db):
+        return "neutral", neutral_set, "silence"
+    if not voiced:
+        return None, None, "unvoiced"
+    if conf < float(min_conf):
+        return None, None, "low_conf"
+
+    target_label = str(lab).lower()
+    target_set = pick_mouth_set_for_label(emotions, target_label) or neutral_set
+    return target_label, target_set, "label"
 
 
 def run(args) -> None:
@@ -302,13 +659,56 @@ def run(args) -> None:
     # ---- audio device ----
     samplerate = 48000
     input_channels = 1
-    if args.device is not None:
+    audio_resolution: dict | None = None
+    audio_apply_state: dict | None = None
+    allow_default_source_switch = bool(getattr(args, "linux_allow_default_source_switch", False))
+
+    def _resolve_input_device(*, prefer_default_source: bool = False):
+        nonlocal audio_resolution, audio_apply_state, samplerate, input_channels
+        if audio_resolution is not None:
+            cleanup_audio_device_resolution(audio_resolution, audio_apply_state)
+        spec = normalize_audio_device_spec(getattr(args, "audio_device_spec", "") or args.device)
+        audio_resolution = resolve_audio_device_spec(
+            spec,
+            sd,
+            fallback_index=args.device,
+            prefer_default_source=prefer_default_source and allow_default_source_switch,
+            allow_default_source_switch=allow_default_source_switch,
+        )
+        resolved_index = audio_resolution.get("resolved_index")
+        if resolved_index is None:
+            raise RuntimeError(
+                f"audio input device could not be resolved: {audio_resolution.get('effective_spec') or spec}"
+            )
+        audio_apply_state = apply_audio_resolution_for_current_process(audio_resolution)
+        args.device = int(resolved_index)
         dev = sd.query_devices(args.device, "input")
         samplerate = int(dev["default_samplerate"])
         max_in = int(dev.get("max_input_channels", 1) or 1)
-        # 安定のため 1ch 固定（多chデバイスだと処理/挙動が不安定になりがち）
         input_channels = 1
-        print("[audio] using device:", args.device, dev["name"], "sr:", samplerate, "max_in:", max_in, "ch:", input_channels)
+        print(
+            "[audio] using device:",
+            args.device,
+            dev["name"],
+            "sr:",
+            samplerate,
+            "max_in:",
+            max_in,
+            "ch:",
+            input_channels,
+            "strategy:",
+            audio_resolution.get("strategy"),
+        )
+
+    try:
+        _resolve_input_device(prefer_default_source=False)
+    except Exception as e:
+        raw_spec = normalize_audio_device_spec(getattr(args, "audio_device_spec", "") or args.device)
+        if raw_spec and str(raw_spec).startswith("pa:") and allow_default_source_switch:
+            print(f"[audio] primary resolution failed, retrying fallback: {e}")
+            _resolve_input_device(prefer_default_source=True)
+        else:
+            raise
 
     # ---- video sources ----
     prev_w = int(full_w * args.preview_scale)
@@ -359,16 +759,35 @@ def run(args) -> None:
         )
 
     print(f"[discover] found {len(sets_dirs)} emotion set(s): {list(sets_dirs.keys())}")
-    mouth_sets: dict[str, dict[str, np.ndarray]] = {}
+    mouth_color_cfg = clamp_mouth_color_adjust(
+        MouthColorAdjust(
+            brightness=float(getattr(args, "mouth_brightness", 0.0)),
+            saturation=float(getattr(args, "mouth_saturation", 1.0)),
+            warmth=float(getattr(args, "mouth_warmth", 0.0)),
+            color_strength=float(getattr(args, "mouth_color_strength", 0.75)),
+            edge_priority=float(getattr(args, "mouth_edge_priority", 0.85)),
+            edge_width_ratio=float(getattr(args, "mouth_edge_width_ratio", 0.10)),
+            inspect_boost=float(getattr(args, "mouth_inspect_boost", 1.0)),
+        ),
+    )
+    inspect_levels = (1.0, 2.0, 3.0, 4.0)
+    inspect_boost = min(inspect_levels, key=lambda x: abs(x - float(mouth_color_cfg.inspect_boost)))
+    mouth_sets_original: dict[str, dict[str, np.ndarray]] = {}
     for name, p in sets_dirs.items():
         try:
-            mouth_sets[name] = load_mouth_sprites(p, full_w, full_h)
+            mouth_sets_original[name] = load_mouth_sprites(p, full_w, full_h)
             print(f"[load] successfully loaded emotion set: '{name}'")
         except Exception as e:
             print(f"[warn] failed to load mouth set '{name}': {p} ({e})")
 
+    mouth_sets, mouth_color_cfg, inspect_boost, _initial_reload_dt = _rebuild_runtime_mouth_color_sets(
+        mouth_sets_original,
+        mouth_color_cfg,
+        inspect_levels=inspect_levels,
+    )
     if not mouth_sets:
         raise RuntimeError(f"All mouth sprite sets failed to load under: {args.mouth_dir}")
+    color_rebuilder = AsyncMouthColorRebuilder(mouth_sets_original, inspect_levels)
 
     emotions = sorted(mouth_sets.keys())
 
@@ -406,9 +825,56 @@ def run(args) -> None:
         else:
             current_emotion = emotions[0]
 
-    mouth = mouth_sets[current_emotion]
+    current_emotion, mouth = _select_runtime_mouth_view(mouth_sets, current_emotion)
     print(f"[emotion] available sets: {emotions}")
     print(f"[emotion] initial: {current_emotion}")
+    print(
+        "[mouth-color] "
+        f"bri={mouth_color_cfg.brightness:.0f} "
+        f"sat={mouth_color_cfg.saturation:.2f} "
+        f"warm={mouth_color_cfg.warmth:.0f} "
+        f"strength={mouth_color_cfg.color_strength:.2f} "
+        f"edge={mouth_color_cfg.edge_priority:.2f} "
+        f"width={mouth_color_cfg.edge_width_ratio:.2f} "
+        f"inspect={inspect_boost:.1f}"
+    )
+    ipc_token = str(getattr(args, "mouth_ipc_token", "") or "").strip()
+    live_control_path = str(getattr(args, "mouth_live_control", "") or "").strip()
+    live_control_last_check = 0.0
+    live_control_last_requested = 0.0
+    live_control_last_applied = 0.0
+    auto_request_path = str(getattr(args, "mouth_auto_request", "") or "").strip()
+    auto_result_path = str(getattr(args, "mouth_auto_result", "") or "").strip()
+    auto_request_last_check = 0.0
+    auto_request_last_id = ""
+
+    def _queue_color_rebuild(cfg: MouthColorAdjust, *, updated_at: float, reason: str) -> None:
+        nonlocal live_control_last_requested
+        color_rebuilder.submit(updated_at=updated_at, cfg=cfg, reason=reason)
+        live_control_last_requested = max(live_control_last_requested, float(updated_at))
+
+    def _apply_ready_color_rebuild() -> None:
+        nonlocal mouth_sets, mouth_color_cfg, inspect_boost, current_emotion, mouth, live_control_last_applied
+        ready = color_rebuilder.pop_ready()
+        if ready is None or ready.updated_at <= live_control_last_applied:
+            return
+        mouth_sets = ready.mouth_sets
+        mouth_color_cfg = ready.cfg
+        inspect_boost = ready.inspect_boost
+        current_emotion, mouth = _select_runtime_mouth_view(mouth_sets, current_emotion)
+        live_control_last_applied = ready.updated_at
+        tag = "auto-color" if ready.reason.startswith("auto") else "mouth-color"
+        print(
+            f"[{tag}] applied "
+            f"bri={mouth_color_cfg.brightness:.0f} "
+            f"sat={mouth_color_cfg.saturation:.2f} "
+            f"warm={mouth_color_cfg.warmth:.0f} "
+            f"strength={mouth_color_cfg.color_strength:.2f} "
+            f"inspect={inspect_boost:.1f} "
+            f"dt={ready.reload_dt*1000.0:.1f}ms"
+        )
+        if ready.reload_dt > 0.2:
+            print(f"[{tag} warn] sprite rebuild exceeded 200ms; async apply prevented render blocking.")
 
     emotion_q: queue.Queue[str] = queue.Queue()
 
@@ -436,7 +902,7 @@ def run(args) -> None:
     emo_audio_q: queue.Queue[np.ndarray] | None = None
     emo_analyzer = None
     last_auto_label = infer_label_from_set_name(current_emotion)
-    emo_buf = np.zeros((0,), dtype=np.float32)
+    emo_buf = AudioChunkBuffer(max_samples=int(samplerate * 1.2))
     emo_window_sec = 0.25      # 0.25秒ぶんまとめて推定
     emo_eval_interval = 0.10   # 10Hzで推定
     emo_window_len = 0
@@ -460,6 +926,8 @@ def run(args) -> None:
     print(f"[info] resolved track: {track_path}")
     track_prev = MouthTrack.load(track_path, prev_w, prev_h, policy=args.valid_policy)
     track_full = MouthTrack.load(track_path, full_w, full_h, policy=args.valid_policy) if vid_full is not None else None
+    vid_full_auto: BgVideo | None = None
+    track_full_auto: MouthTrack | None = None
 
     if track_prev is None:
         print("[warn] mouth_track not found -> fallback to fixed placement")
@@ -483,6 +951,18 @@ def run(args) -> None:
                 print(f"       calib_offset={off} calib_scale={sc} calib_rotation={rot}")
         except Exception:
             pass
+
+    def _ensure_full_auto_sources() -> tuple[BgVideo | None, MouthTrack | None]:
+        nonlocal vid_full_auto, track_full_auto
+        if vid_full is not None:
+            return vid_full, track_full
+        if vid_full_auto is None:
+            print("[auto-color] opening full-resolution video source...")
+            vid_full_auto = BgVideo(args.loop_video, full_w, full_h)
+        if track_full_auto is None:
+            print("[auto-color] loading full-resolution track...")
+            track_full_auto = MouthTrack.load(track_path, full_w, full_h, policy=args.valid_policy)
+        return vid_full_auto, track_full_auto
 
     # ---- audio feature buffers ----
     # Use queue.Queue instead of lock+deque to avoid blocking in audio callback.
@@ -520,15 +1000,38 @@ def run(args) -> None:
             except queue.Full:
                 pass
 
-    stream = sd.InputStream(
-        samplerate=samplerate,
-        channels=input_channels,
-        blocksize=hop,
-        dtype="float32",
-        callback=audio_cb,
-        device=args.device,
-        latency="low",
-    )
+    try:
+        stream = sd.InputStream(
+            samplerate=samplerate,
+            channels=input_channels,
+            blocksize=hop,
+            dtype="float32",
+            callback=audio_cb,
+            device=args.device,
+            latency="low",
+        )
+    except Exception as e:
+        raw_spec = normalize_audio_device_spec(getattr(args, "audio_device_spec", "") or args.device)
+        can_retry = (
+            raw_spec
+            and str(raw_spec).startswith("pa:")
+            and audio_resolution is not None
+            and allow_default_source_switch
+            and audio_resolution.get("strategy") != "set_default_source"
+        )
+        if not can_retry:
+            raise RuntimeError(f"failed to open audio input stream: {e}") from e
+        print(f"[audio] stream open failed, retrying fallback: {e}")
+        _resolve_input_device(prefer_default_source=True)
+        stream = sd.InputStream(
+            samplerate=samplerate,
+            channels=input_channels,
+            blocksize=hop,
+            dtype="float32",
+            callback=audio_cb,
+            device=args.device,
+            latency="low",
+        )
 
     # ---- audio state ----
     beta = one_pole_beta(args.cutoff_hz, args.audio_hz)
@@ -547,6 +1050,7 @@ def run(args) -> None:
     last_vowel_change_t = -999.0
     e_prev2, e_prev1 = 0.0, 0.0
     mouth_shape_now = "closed"
+    prev_mouth_level = "closed"
 
     # ---- virtual cam ----
     cam = None
@@ -561,241 +1065,374 @@ def run(args) -> None:
 
     window_name = args.window_name
     cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+    cv2.resizeWindow(window_name, vid_prev.w, vid_prev.h)
     print("[info] Press 'q' to quit.")
     print("stream latency:", stream.latency)
 
     def draw_one(dst_rgb: np.ndarray, frame_idx: int, track: MouthTrack | None, scale: float):
         nonlocal mouth_shape_now
-        spr = mouth.get(mouth_shape_now, mouth["closed"])
+        meta = _compose_mouth_patch(
+            mouth,
+            mouth_shape_now,
+            frame_idx,
+            track,
+            scale,
+            int(args.mouth_fixed_x),
+            int(args.mouth_fixed_y),
+        )
+        alpha_blit_rgb_safe(dst_rgb, meta["patch"], int(meta["x0"]), int(meta["y0"]))
 
-        quad = track.get_quad(frame_idx) if track is not None else None
-        if quad is None:
-            # fixed placement: (x,y) は中心指定
-            x = int(args.mouth_fixed_x * scale - spr.shape[1] // 2)
-            y = int(args.mouth_fixed_y * scale - spr.shape[0] // 2)
-            alpha_blit_rgb_safe(dst_rgb, spr, x, y)
-        else:
-            patch, x0, y0 = warp_rgba_to_quad(spr, quad)
-            alpha_blit_rgb_safe(dst_rgb, patch, x0, y0)
+        quad = meta.get("quad")
+        if args.draw_quad and quad is not None:
+            q = np.asarray(quad, dtype=np.int32).reshape(4, 2)
+            cv2.polylines(dst_rgb, [q], isClosed=True, color=(0, 255, 0), thickness=2)
+        return meta
 
-            if args.draw_quad:
-                q = quad.astype(np.int32).reshape(4, 2)
-                cv2.polylines(dst_rgb, [q], isClosed=True, color=(0, 255, 0), thickness=2)
+    try:
+        with stream:
+            next_frame_t = time.perf_counter()
+            while True:
+                now = time.perf_counter()
+                t = now - t0
+                _apply_ready_color_rebuild()
 
-    with stream:
-        next_frame_t = time.perf_counter()
-        while True:
-            now = time.perf_counter()
-            t = now - t0
-
-            # ---- emotion GUI updates ----
-            # Avoid raising queue.Empty every frame when no GUI input is present.
-            if not emotion_q.empty():
-                while True:
+                if live_control_path and (now - live_control_last_check) >= 0.15:
+                    live_control_last_check = now
                     try:
-                        sel = emotion_q.get_nowait()
-                    except queue.Empty:
-                        break
-                    if sel in mouth_sets and sel != current_emotion:
-                        current_emotion = sel
-                        mouth = mouth_sets[current_emotion]
-                        print(f"[emotion] switched -> {current_emotion}")
-                        if bool(args.emotion_hud):
-                            try:
-                                hud_q.put_nowait(format_emotion_hud_text(infer_label_from_set_name(current_emotion)))
-                            except Exception:
-                                pass
+                        loaded = _load_live_color_control(live_control_path, ipc_token)
+                    except Exception as e:
+                        loaded = None
+                        print(f"[mouth-color warn] failed to read live control: {e}")
+                    if loaded is not None:
+                        updated_at, live_cfg = loaded
+                        if updated_at > max(live_control_last_requested, live_control_last_applied):
+                            _queue_color_rebuild(live_cfg, updated_at=updated_at, reason="live")
+                            print(
+                                "[mouth-color] queued live update "
+                                f"bri={live_cfg.brightness:.0f} "
+                                f"sat={live_cfg.saturation:.2f} "
+                                f"warm={live_cfg.warmth:.0f} "
+                                f"strength={live_cfg.color_strength:.2f} "
+                                f"edge={live_cfg.edge_priority:.2f} "
+                                f"width={live_cfg.edge_width_ratio:.2f} "
+                                f"inspect={live_cfg.inspect_boost:.1f}"
+                            )
 
-            # ---- emotion AUTO updates ----
-            if emotion_auto_enabled and (emo_audio_q is not None) and (emo_analyzer is not None):
-                # drain chunks
-                while True:
-                    try:
-                        emo_buf = np.concatenate([emo_buf, emo_audio_q.get_nowait()])
-                    except queue.Empty:
-                        break
-
-                # keep buffer bounded (last ~1s)
-                max_len = int(samplerate * 1.2)
-                if emo_buf.size > max_len:
-                    emo_buf = emo_buf[-max_len:]
-
-                # evaluate at fixed interval using a window
-                if (now - emo_last_eval) >= emo_eval_interval and emo_buf.size >= emo_window_len:
-                    emo_last_eval = now
-                    xwin = emo_buf[-emo_window_len:]
-
-                    try:
-                        lab, info = emo_analyzer.update(xwin)  # type: ignore[union-attr]
-                    except Exception:
-                        lab, info = None, {}
-
-                    if lab is not None:
-                        rms_db = float(info.get("rms_db", -120.0))
-                        conf = float(info.get("confidence", 0.0))
-                        voiced = float(info.get("voiced", 0.0)) >= 0.5
-
-                        # debug (1Hz)
-                        if (now - emo_last_debug) >= 1.0:
-                            emo_last_debug = now
-                            print(f"[emotion-auto dbg] lab={str(lab).lower():8s} conf={conf:.2f} voiced={int(voiced)} rms_db={rms_db:.1f} cur={current_emotion}")
-
-                        if rms_db < float(args.emotion_silence_db):
-                            target_label = "neutral"
-                            target_set = neutral_set
-                        elif (not voiced):
-                            # ambiguous -> keep current
-                            target_label = None
-                            target_set = None
-                        else:
-                            target_label = str(lab).lower()
-                            target_set = pick_mouth_set_for_label(emotions, target_label) or neutral_set
-
-                        if target_set in mouth_sets and target_set != current_emotion:
-                            current_emotion = target_set
+                # ---- emotion GUI updates ----
+                # Avoid raising queue.Empty every frame when no GUI input is present.
+                if not emotion_q.empty():
+                    while True:
+                        try:
+                            sel = emotion_q.get_nowait()
+                        except queue.Empty:
+                            break
+                        if sel in mouth_sets and sel != current_emotion:
+                            current_emotion = sel
                             mouth = mouth_sets[current_emotion]
-                            print(f"[emotion-auto] switched -> {current_emotion} ({target_label}, conf={conf:.2f})")
+                            print(f"[emotion] switched -> {current_emotion}")
                             if bool(args.emotion_hud):
                                 try:
-                                    hud_q.put_nowait(format_emotion_hud_text(target_label))
+                                    hud_q.put_nowait(format_emotion_hud_text(infer_label_from_set_name(current_emotion)))
                                 except Exception:
                                     pass
 
-            # ---- audio updates ----
-            # Drain all available items from the queue (non-blocking)
-            items: list[tuple[float, float]] = []
-            while True:
-                try:
-                    items.append(feat_q.get_nowait())
-                except queue.Empty:
-                    break
-
-            for rms_raw, cent in items:
-                if rms_raw < noise + 0.0005:
-                    noise = 0.99 * noise + 0.01 * rms_raw
-                else:
-                    noise = 0.999 * noise + 0.001 * rms_raw
-
-                # サイレンスゲート + 正規化の安定化
-                peak = max(rms_raw, peak * peak_decay, noise + silence_gate_rms)
-                denom = max(peak - noise, silence_gate_rms)
-                rms_norm = float(np.clip((rms_raw - noise) / denom, 0.0, 1.0) ** 0.5)
-
-                # 無音域は強制的に0へ（パクパク防止）
-                if rms_raw < noise + silence_gate_rms:
-                    rms_norm = 0.0
-
-                rms_smooth_q.append(rms_norm)
-                rms_sm = float(np.mean(rms_smooth_q))
-
-                env_lp = env_lp + beta * (rms_sm - env_lp)
-                env = float(np.clip(0.75 * env_lp + 0.25 * rms_sm, 0.0, 1.0))
-
-                env_hist.append(env)
-                cent_hist.append(float(cent))
-
-                if len(env_hist) > args.audio_hz * 3 and (len(env_hist) % args.audio_hz == 0):
-                    vals = np.array(env_hist, dtype=np.float32)
-                    k = max(1, int(0.2 * len(vals)))
-                    noise_floor_env = float(np.median(np.sort(vals)[:k]))
-                    TALK_TH = float(np.clip(noise_floor_env + 0.05, 0.03, 0.18))
-
-                    talk_vals = vals[vals > TALK_TH]
-                    if len(talk_vals) > 20:
-                        HALF_TH = float(np.percentile(talk_vals, 25))
-                        OPEN_TH = float(np.percentile(talk_vals, 58))
-                        HALF_TH = max(HALF_TH, TALK_TH + 0.02)
-                        OPEN_TH = max(OPEN_TH, HALF_TH + 0.05)
-
-                        cents = np.array(cent_hist, dtype=np.float32)
-                        open_mask = vals >= OPEN_TH
-                        cent_open = cents[open_mask] if open_mask.sum() > 20 else cents[vals > TALK_TH]
-                        if len(cent_open) > 20:
-                            U_TH = float(np.percentile(cent_open, 20))
-                            E_TH = float(np.percentile(cent_open, 80))
-
-                # mouth level
-                if env < HALF_TH:
-                    mouth_level = "closed"
-                elif env < OPEN_TH:
-                    mouth_level = "half"
-                else:
-                    mouth_level = "open"
-
-                # vowel selection on peaks
-                if mouth_level == "open":
-                    is_peak = (e_prev2 < e_prev1) and (e_prev1 >= env) and (e_prev1 > OPEN_TH + args.peak_margin)
-                    if is_peak and (t - last_vowel_change_t) >= args.min_vowel_interval:
-                        if len(cent_hist) >= 5:
-                            cm = float(np.mean(list(cent_hist)[-5:]))
-                        else:
-                            cm = float(cent)
-                        if cm < U_TH:
-                            current_open_shape = "u"
-                        elif cm > E_TH:
-                            current_open_shape = "e"
-                        else:
-                            current_open_shape = "open"
-                        last_vowel_change_t = t
-                    mouth_shape_now = current_open_shape
-                elif mouth_level == "half":
-                    mouth_shape_now = "half"
-                else:
-                    mouth_shape_now = "closed"
-
-                e_prev2, e_prev1 = e_prev1, env
-
-            # ---- HUD update (main thread) ----
-            if hud_root is not None and hud_lbl is not None:
-                try:
+                # ---- emotion AUTO updates ----
+                if emotion_auto_enabled and (emo_audio_q is not None) and (emo_analyzer is not None):
+                    # drain chunks
                     while True:
-                        txt = hud_q.get_nowait()
-                        hud_lbl.config(text=txt)
-                except queue.Empty:
-                    pass
-                try:
-                    hud_root.update_idletasks()
-                    hud_root.update()
-                except Exception:
-                    hud_root = None
-                    hud_lbl = None
+                        try:
+                            emo_buf.append(emo_audio_q.get_nowait())
+                        except queue.Empty:
+                            break
 
-            # ---- preview ----
-            frp = vid_prev.get_frame(now).copy()
-            draw_one(frp, vid_prev.frame_idx, track_prev, args.preview_scale)
-            cv2.imshow(window_name, cv2.cvtColor(frp, cv2.COLOR_RGB2BGR))
-            if cv2.waitKey(1) & 0xFF == ord("q"):
-                break
+                    # evaluate at fixed interval using a window
+                    if (now - emo_last_eval) >= emo_eval_interval and len(emo_buf) >= emo_window_len:
+                        emo_last_eval = now
+                        xwin = emo_buf.tail(emo_window_len)
 
-            # ---- virtual cam ----
-            if cam is not None and vid_full is not None:
-                frf = vid_full.get_frame(now).copy()
-                draw_one(frf, vid_full.frame_idx, track_full, 1.0)
-                cam.send(frf)
-                cam.sleep_until_next_frame()
+                        try:
+                            lab, info = emo_analyzer.update(xwin)  # type: ignore[union-attr]
+                        except Exception:
+                            lab, info = None, {}
 
-            # ---- pacing ----
-            next_frame_t += 1.0 / float(args.render_fps)
-            sleep_s = next_frame_t - time.perf_counter()
-            if sleep_s > 0:
-                time.sleep(sleep_s)
-            else:
-                next_frame_t = time.perf_counter()
+                        if lab is not None:
+                            rms_db = float(info.get("rms_db", -120.0))
+                            conf = float(info.get("confidence", 0.0))
+                            voiced = float(info.get("voiced", 0.0)) >= 0.5
 
-            # ---- stats ----
-            rendered += 1
-            if rendered % int(args.render_fps) == 0:
-                now2 = time.perf_counter()
-                fps = float(args.render_fps) / (now2 - last_stat)
-                last_stat = now2
-                print(f"[runtime] fps:{fps:.2f} mouth:{mouth_shape_now} frame:{vid_prev.frame_idx}")
+                            # debug (1Hz)
+                            if (now - emo_last_debug) >= 1.0:
+                                emo_last_debug = now
+                                print(f"[emotion-auto dbg] lab={str(lab).lower():8s} conf={conf:.2f} voiced={int(voiced)} rms_db={rms_db:.1f} cur={current_emotion}")
 
-    if cam is not None:
-        cam.close()
-    vid_prev.close()
-    if vid_full is not None:
-        vid_full.close()
-    cv2.destroyAllWindows()
+                            target_label, target_set, target_reason = resolve_emotion_auto_target(
+                                lab,
+                                info,
+                                emotions,
+                                neutral_set,
+                                silence_db=float(args.emotion_silence_db),
+                                min_conf=float(args.emotion_min_conf),
+                            )
+
+                            if target_reason == "low_conf" and (now - emo_last_debug) < 0.25:
+                                print(
+                                    f"[emotion-auto dbg] hold current: low confidence "
+                                    f"{conf:.2f} < min {float(args.emotion_min_conf):.2f}"
+                                )
+
+                            if target_set in mouth_sets and target_set != current_emotion:
+                                current_emotion = target_set
+                                mouth = mouth_sets[current_emotion]
+                                print(f"[emotion-auto] switched -> {current_emotion} ({target_label}, conf={conf:.2f})")
+                                if bool(args.emotion_hud):
+                                    try:
+                                        hud_q.put_nowait(format_emotion_hud_text(target_label))
+                                    except Exception:
+                                        pass
+
+                # ---- audio updates ----
+                # Drain all available items from the queue (non-blocking)
+                items: list[tuple[float, float]] = []
+                while True:
+                    try:
+                        items.append(feat_q.get_nowait())
+                    except queue.Empty:
+                        break
+
+                for rms_raw, cent in items:
+                    if rms_raw < noise + 0.0005:
+                        noise = 0.99 * noise + 0.01 * rms_raw
+                    else:
+                        noise = 0.999 * noise + 0.001 * rms_raw
+
+                    # サイレンスゲート + 正規化の安定化
+                    peak = max(rms_raw, peak * peak_decay, noise + silence_gate_rms)
+                    denom = max(peak - noise, silence_gate_rms)
+                    rms_norm = float(np.clip((rms_raw - noise) / denom, 0.0, 1.0) ** 0.5)
+
+                    # 無音域は強制的に0へ（パクパク防止）
+                    if rms_raw < noise + silence_gate_rms:
+                        rms_norm = 0.0
+
+                    rms_smooth_q.append(rms_norm)
+                    rms_sm = float(np.mean(rms_smooth_q))
+
+                    env_lp = env_lp + beta * (rms_sm - env_lp)
+                    env = float(np.clip(0.75 * env_lp + 0.25 * rms_sm, 0.0, 1.0))
+
+                    env_hist.append(env)
+                    cent_hist.append(float(cent))
+
+                    if len(env_hist) > args.audio_hz * 3 and (len(env_hist) % args.audio_hz == 0):
+                        vals = np.array(env_hist, dtype=np.float32)
+                        k = max(1, int(0.2 * len(vals)))
+                        noise_floor_env = float(np.median(np.sort(vals)[:k]))
+                        TALK_TH = float(np.clip(noise_floor_env + 0.05, 0.03, 0.18))
+
+                        talk_vals = vals[vals > TALK_TH]
+                        if len(talk_vals) > 20:
+                            HALF_TH = float(np.percentile(talk_vals, 25))
+                            OPEN_TH = float(np.percentile(talk_vals, 58))
+                            HALF_TH = max(HALF_TH, TALK_TH + 0.02)
+                            OPEN_TH = max(OPEN_TH, HALF_TH + 0.05)
+
+                            cents = np.array(cent_hist, dtype=np.float32)
+                            open_mask = vals >= OPEN_TH
+                            cent_open = cents[open_mask] if open_mask.sum() > 20 else cents[vals > TALK_TH]
+                            if len(cent_open) > 20:
+                                U_TH = float(np.percentile(cent_open, 20))
+                                E_TH = float(np.percentile(cent_open, 80))
+
+                    mouth_level = classify_mouth_level_with_hysteresis(
+                        env,
+                        HALF_TH,
+                        OPEN_TH,
+                        prev_mouth_level,
+                    )
+                    prev_mouth_level = mouth_level
+
+                    # vowel selection on peaks
+                    if mouth_level == "open":
+                        is_peak = (e_prev2 < e_prev1) and (e_prev1 >= env) and (e_prev1 > OPEN_TH + args.peak_margin)
+                        if is_peak and (t - last_vowel_change_t) >= args.min_vowel_interval:
+                            if len(cent_hist) >= 5:
+                                cm = float(np.mean(list(cent_hist)[-5:]))
+                            else:
+                                cm = float(cent)
+                            if cm < U_TH:
+                                current_open_shape = "u"
+                            elif cm > E_TH:
+                                current_open_shape = "e"
+                            else:
+                                current_open_shape = "open"
+                            last_vowel_change_t = t
+                        mouth_shape_now = current_open_shape
+                    elif mouth_level == "half":
+                        mouth_shape_now = "half"
+                    else:
+                        mouth_shape_now = "closed"
+
+                    e_prev2, e_prev1 = e_prev1, env
+
+                # ---- HUD update (main thread) ----
+                if hud_root is not None and hud_lbl is not None:
+                    try:
+                        while True:
+                            txt = hud_q.get_nowait()
+                            hud_lbl.config(text=txt)
+                    except queue.Empty:
+                        pass
+                    try:
+                        hud_root.update_idletasks()
+                        hud_root.update()
+                    except Exception:
+                        hud_root = None
+                        hud_lbl = None
+
+                # ---- preview ----
+                frp_base = vid_prev.get_frame(now).copy()
+                frp = frp_base.copy()
+                draw_meta = draw_one(frp, vid_prev.frame_idx, track_prev, args.preview_scale)
+
+                if auto_request_path and auto_result_path and (now - auto_request_last_check) >= 0.15:
+                    auto_request_last_check = now
+                    try:
+                        req = _load_auto_color_request(auto_request_path, ipc_token)
+                    except Exception as e:
+                        req = None
+                        print(f"[auto-color warn] failed to read request: {e}")
+                    if req is not None:
+                        request_id, _requested_at = req
+                        if request_id and request_id != auto_request_last_id:
+                            auto_request_last_id = request_id
+                            estimated = None
+                            estimated_source = "preview"
+                            full_sampling_error = False
+                            try:
+                                full_video, full_track_src = _ensure_full_auto_sources()
+                                if full_video is not None:
+                                    fr_full = full_video.get_frame(now).copy()
+                                    full_meta = _compose_mouth_patch(
+                                        mouth,
+                                        mouth_shape_now,
+                                        full_video.frame_idx,
+                                        full_track_src,
+                                        1.0,
+                                        int(args.mouth_fixed_x),
+                                        int(args.mouth_fixed_y),
+                                    )
+                                    estimated = _estimate_auto_color_result(
+                                        fr_full,
+                                        np.asarray(full_meta["patch"]),
+                                        x0=int(full_meta["x0"]),
+                                        y0=int(full_meta["y0"]),
+                                        current_cfg=mouth_color_cfg,
+                                    )
+                                    if estimated is not None:
+                                        estimated_source = "full"
+                            except Exception as e:
+                                print(
+                                    "[auto-color warn] full-resolution sampling unavailable; "
+                                    f"fallback to preview ({e})"
+                                )
+                                estimated = None
+                                full_sampling_error = True
+                            if estimated is None:
+                                if not full_sampling_error:
+                                    print("[auto-color warn] full-resolution sampling failed; fallback to preview")
+                                estimated = _estimate_auto_color_result(
+                                    frp_base,
+                                    np.asarray(draw_meta["patch"]),
+                                    x0=int(draw_meta["x0"]),
+                                    y0=int(draw_meta["y0"]),
+                                    current_cfg=mouth_color_cfg,
+                                )
+                                estimated_source = "preview"
+                            if estimated is None:
+                                result_payload = {
+                                    "session_token": ipc_token,
+                                    "request_id": request_id,
+                                    "processed_at": float(time.time()),
+                                    "error": "sampling_failed",
+                                }
+                                print("[auto-color warn] sampling failed")
+                            else:
+                                new_cfg = estimated["cfg"]
+                                apply_updated_at = float(time.time())
+                                _queue_color_rebuild(
+                                    new_cfg,
+                                    updated_at=apply_updated_at,
+                                    reason=f"auto:{estimated_source}",
+                                )
+                                result_payload = {
+                                    "session_token": ipc_token,
+                                    "request_id": request_id,
+                                    "processed_at": float(time.time()),
+                                    "apply_updated_at": apply_updated_at,
+                                    "mouth_brightness": float(new_cfg.brightness),
+                                    "mouth_saturation": float(new_cfg.saturation),
+                                    "mouth_warmth": float(new_cfg.warmth),
+                                    "mouth_color_strength": float(new_cfg.color_strength),
+                                    "bg_sample_count": int(estimated["bg_sample_count"]),
+                                    "mouth_sample_count": int(estimated["mouth_sample_count"]),
+                                    "debug": estimated["debug"],
+                                }
+                                print(
+                                    "[auto-color] queued "
+                                    f"bri={new_cfg.brightness:.0f} "
+                                    f"sat={new_cfg.saturation:.2f} "
+                                    f"warm={new_cfg.warmth:.0f} "
+                                    f"strength={new_cfg.color_strength:.2f} "
+                                    f"src={estimated_source}"
+                                )
+                            try:
+                                _write_json_atomic(auto_result_path, result_payload)
+                            except Exception as e:
+                                print(f"[auto-color warn] failed to write result: {e}")
+
+                frp = apply_inspect_boost_3ch(frp, inspect_boost, color_order="RGB")
+                k = _show_preview_frame(window_name, frp)
+                if k == ord("q"):
+                    break
+                if k == ord("v"):
+                    cur_idx = inspect_levels.index(inspect_boost) if inspect_boost in inspect_levels else 0
+                    inspect_boost = inspect_levels[(cur_idx + 1) % len(inspect_levels)]
+                    print(f"[mouth-color] inspect boost -> {inspect_boost:.1f}")
+
+                # ---- virtual cam ----
+                if cam is not None and vid_full is not None:
+                    frf = vid_full.get_frame(now).copy()
+                    draw_one(frf, vid_full.frame_idx, track_full, 1.0)
+                    cam.send(frf)
+                    cam.sleep_until_next_frame()
+
+                # ---- pacing ----
+                next_frame_t += 1.0 / float(args.render_fps)
+                sleep_s = next_frame_t - time.perf_counter()
+                if sleep_s > 0:
+                    time.sleep(sleep_s)
+                else:
+                    next_frame_t = time.perf_counter()
+
+                # ---- stats ----
+                rendered += 1
+                if rendered % int(args.render_fps) == 0:
+                    now2 = time.perf_counter()
+                    fps = float(args.render_fps) / (now2 - last_stat)
+                    last_stat = now2
+                    print(f"[runtime] fps:{fps:.2f} mouth:{mouth_shape_now} frame:{vid_prev.frame_idx}")
+
+    finally:
+        color_rebuilder.close()
+        if cam is not None:
+            cam.close()
+        vid_prev.close()
+        if vid_full is not None:
+            vid_full.close()
+        if vid_full_auto is not None:
+            vid_full_auto.close()
+        cv2.destroyAllWindows()
+        cleanup_audio_device_resolution(audio_resolution or {}, audio_apply_state)
 
 
 def load_last_session() -> dict:
@@ -828,13 +1465,15 @@ def parse_args():
 
     ap.add_argument("--full-w", type=int, default=1440)
     ap.add_argument("--full-h", type=int, default=2560)
-    ap.add_argument("--preview-scale", type=float, default=0.5)
+    ap.add_argument("--preview-scale", type=float, default=1.0)
 
     ap.add_argument("--render-fps", type=int, default=30)
     ap.add_argument("--audio-hz", type=int, default=100)
     ap.add_argument("--cutoff-hz", type=float, default=8.0)
 
     ap.add_argument("--device", type=int, default=31, help="sounddevice input device index")
+    ap.add_argument("--audio-device-spec", type=str, default="", help="audio device spec: sd:<index> / pa:<source>")
+    ap.add_argument("--linux-allow-default-source-switch", action="store_true", help=argparse.SUPPRESS)
     ap.add_argument("--use-virtual-cam", action="store_true")
 
     ap.add_argument("--mouth-fixed-x", type=int, default=int(1440 * 0.50))
@@ -870,6 +1509,17 @@ def parse_args():
     ap.add_argument("--emotion-min-conf", type=float, default=0.45, help=argparse.SUPPRESS)
     ap.add_argument("--emotion-hud-font", type=int, default=28, help=argparse.SUPPRESS)
     ap.add_argument("--emotion-hud-alpha", type=float, default=0.92, help=argparse.SUPPRESS)
+    ap.add_argument("--mouth-brightness", type=float, default=0.0, help=argparse.SUPPRESS)
+    ap.add_argument("--mouth-saturation", type=float, default=1.0, help=argparse.SUPPRESS)
+    ap.add_argument("--mouth-warmth", type=float, default=0.0, help=argparse.SUPPRESS)
+    ap.add_argument("--mouth-color-strength", type=float, default=0.75, help=argparse.SUPPRESS)
+    ap.add_argument("--mouth-edge-priority", type=float, default=0.85, help=argparse.SUPPRESS)
+    ap.add_argument("--mouth-edge-width-ratio", type=float, default=0.10, help=argparse.SUPPRESS)
+    ap.add_argument("--mouth-inspect-boost", type=float, default=1.0, help=argparse.SUPPRESS)
+    ap.add_argument("--mouth-ipc-token", default="", help=argparse.SUPPRESS)
+    ap.add_argument("--mouth-live-control", default="", help=argparse.SUPPRESS)
+    ap.add_argument("--mouth-auto-request", default="", help=argparse.SUPPRESS)
+    ap.add_argument("--mouth-auto-result", default="", help=argparse.SUPPRESS)
 
     ap.add_argument("--window-name", default="LoopLipsync Runtime")
 

@@ -34,6 +34,9 @@ from typing import Dict, List, Optional, Tuple
 import cv2
 import numpy as np
 
+from image_io import write_image_file
+from python_exec import resolve_python_subprocess_executable
+
 
 # ---------------------------------------------------------------------------
 # Data classes
@@ -42,6 +45,7 @@ import numpy as np
 @dataclass
 class MouthFrameInfo:
     """1フレームの口情報"""
+    # 既存フィールド
     frame_idx: int
     quad: np.ndarray          # (4, 2) float32
     center: np.ndarray        # (2,) float32 - 口の中心座標
@@ -49,6 +53,18 @@ class MouthFrameInfo:
     height: float             # 口quadの高さ
     confidence: float         # 検出信頼度
     valid: bool               # 検出が有効か
+
+    # 新規フィールド（全てデフォルト値あり - 後方互換性のため）
+    inner_darkness: float = 0.0       # 口内部の暗さ (0.0-1.0)
+    opening_ratio: float = 0.0        # 開口度 (0.0-1.0)
+    horizontal_stretch: float = 0.0   # 横への伸び (0.0-1.0)
+    vertical_compression: float = 0.0  # 縦の圧縮 (0.0-1.0)
+    lip_curvature: float = 0.0        # 唇の曲率 (-1.0〜1.0)
+    score_open: float = 0.0           # openタイプのスコア
+    score_closed: float = 0.0         # closedタイプのスコア
+    score_half: float = 0.0           # halfタイプのスコア
+    score_e: float = 0.0              # eタイプのスコア
+    score_u: float = 0.0              # uタイプのスコア
 
 
 @dataclass
@@ -368,7 +384,8 @@ def extract_mouth_sprite(
         rgba: (H, W, 4) uint8 - 透過PNG用
     """
     # 正規化空間に変換
-    patch = warp_frame_to_norm(frame_bgr, quad, unified_w, unified_h)
+    patch_bgr = warp_frame_to_norm(frame_bgr, quad, unified_w, unified_h)
+    patch_rgb = cv2.cvtColor(patch_bgr, cv2.COLOR_BGR2RGB)
     
     # 楕円マスク生成
     rx = int((unified_w * mask_scale) * 0.5)
@@ -380,7 +397,7 @@ def extract_mouth_sprite(
     
     # RGBA画像を生成
     rgba = np.zeros((unified_h, unified_w, 4), dtype=np.uint8)
-    rgba[:, :, :3] = patch
+    rgba[:, :, :3] = patch_rgb
     rgba[:, :, 3] = (mask_f * 255).astype(np.uint8)
     
     return rgba
@@ -495,7 +512,7 @@ class MouthSpriteExtractor:
             raise FileNotFoundError(f"Detector script not found: {detector_script}")
         
         cmd = [
-            sys.executable,
+            resolve_python_subprocess_executable(),
             detector_script,
             "--video", self.video_path,
             "--out", track_out,
@@ -649,7 +666,12 @@ class MouthSpriteExtractor:
             filepath = os.path.join(output_dir, filename)
             
             # RGBA画像として保存
-            cv2.imwrite(filepath, cv2.cvtColor(rgba, cv2.COLOR_RGBA2BGRA))
+            ok = write_image_file(
+                filepath,
+                cv2.cvtColor(rgba, cv2.COLOR_RGBA2BGRA),
+            )
+            if not ok:
+                raise RuntimeError(f"Failed to save sprite: {filepath}")
             saved_paths[name] = filepath
             
             if callback:

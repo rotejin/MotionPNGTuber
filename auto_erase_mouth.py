@@ -30,6 +30,8 @@ from typing import List, Optional, Tuple
 import cv2
 import numpy as np
 
+from python_exec import resolve_python_subprocess_executable
+
 
 # ----------------------------
 # Track loading (compatible with face_track_anime_detector.py output)
@@ -42,6 +44,12 @@ class Track:
     filled: np.ndarray        # (N,4,2) float32 (filled by policy)
     confidence: Optional[np.ndarray]
     total: int
+
+
+@dataclass(frozen=True)
+class EraseCandidate:
+    valid_policy: str
+    coverage: float
 
 
 def _fill_quads(quads: np.ndarray, valid: np.ndarray, policy: str) -> np.ndarray:
@@ -89,6 +97,40 @@ def load_track(path: str, target_w: int, target_h: int, policy: str) -> Track:
 
     filled = _fill_quads(quads, valid, policy=policy)
     return Track(quad=quads, valid=valid, filled=filled, confidence=conf, total=int(quads.shape[0]))
+
+
+def parse_coverages(spec: str) -> List[float]:
+    coverages: List[float] = []
+    for s in str(spec).split(","):
+        s = s.strip()
+        if not s:
+            continue
+        coverages.append(float(s))
+    if not coverages:
+        coverages = [0.60, 0.70, 0.80]
+    return coverages
+
+
+def build_erase_candidates(policies: List[str], coverages: List[float]) -> List[EraseCandidate]:
+    out: List[EraseCandidate] = []
+    seen: set[tuple[str, float]] = set()
+    for pol in policies:
+        for cov in coverages:
+            key = (str(pol), round(float(cov), 4))
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(EraseCandidate(valid_policy=str(pol), coverage=float(cov)))
+    return out
+
+
+def should_enable_probe(total_frames: int, fps: float, candidate_count: int) -> bool:
+    if candidate_count < 4:
+        return False
+    if total_frames <= 0:
+        return False
+    long_enough = total_frames >= int(max(240, fps * 8.0))
+    return bool(long_enough)
 
 
 # ----------------------------
@@ -193,10 +235,17 @@ def _candidate_indices(track: Track, n_out: int, top_k: int = 48) -> List[int]:
     return idxs if idxs else [int(valid_idxs[0])]
 
 
-def choose_ref_frame_smart(video_path: str, track: Track, n_out: int,
-                           norm_w: int, norm_h: int, coverage_for_mask: float = 0.60) -> int:
+def choose_ref_frame_smart(
+    video_path: str,
+    track: Track,
+    n_out: int,
+    norm_w: int,
+    norm_h: int,
+    coverage_for_mask: float = 0.60,
+    top_k: int = 48,
+) -> int:
     """Pick ref frame with closed-mouth preference among high-confidence candidates."""
-    cand = _candidate_indices(track, n_out=n_out, top_k=48)
+    cand = _candidate_indices(track, n_out=n_out, top_k=max(1, int(top_k)))
 
     inner_u8, _ring_u8 = inner_and_ring_masks(norm_w, norm_h, coverage=coverage_for_mask)
     inner = inner_u8 > 0
@@ -231,6 +280,36 @@ def choose_ref_frame_smart(video_path: str, track: Track, n_out: int,
         cap.release()
 
     return best_idx
+
+
+def select_ref_frame(
+    video_path: str,
+    track: Track,
+    *,
+    n_out: int,
+    norm_w: int,
+    norm_h: int,
+    ref_mode: str,
+    coverage_for_mask: float = 0.60,
+    ref_topk: int = 48,
+) -> int:
+    if ref_mode == "first":
+        return int(np.where(track.valid[:n_out])[0][0]) if track.valid[:n_out].any() else 0
+    if ref_mode == "confidence":
+        if track.confidence is None:
+            return int(np.where(track.valid[:n_out])[0][0]) if track.valid[:n_out].any() else 0
+        m = track.confidence[:n_out].copy()
+        m[~track.valid[:n_out]] = -1.0
+        return int(np.argmax(m))
+    return choose_ref_frame_smart(
+        video_path,
+        track,
+        n_out=n_out,
+        norm_w=norm_w,
+        norm_h=norm_h,
+        coverage_for_mask=coverage_for_mask,
+        top_k=ref_topk,
+    )
 
 
 # ----------------------------
@@ -340,6 +419,91 @@ def score_mouthless(video_in: str, video_out: str, track: Track, n_out: int, nor
     return float(np.mean(scores))
 
 
+def _extract_probe_video(video_path: str, start_f: int, count_f: int, out_path: str) -> bool:
+    start_f = int(max(0, start_f))
+    count_f = int(max(1, count_f))
+
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        return False
+
+    w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
+    h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
+    fps = float(cap.get(cv2.CAP_PROP_FPS) or 30.0)
+    if w <= 0 or h <= 0:
+        cap.release()
+        return False
+
+    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+    vw = cv2.VideoWriter(out_path, fourcc, fps, (w, h))
+    if not vw.isOpened():
+        cap.release()
+        return False
+
+    try:
+        for _ in range(start_f):
+            if not cap.grab():
+                return False
+
+        ok_any = False
+        for _ in range(count_f):
+            ok, frame = cap.read()
+            if not ok or frame is None:
+                break
+            vw.write(frame)
+            ok_any = True
+        return ok_any and os.path.isfile(out_path)
+    finally:
+        vw.release()
+        cap.release()
+
+
+def _slice_track_file(track_path: str, out_path: str, start_f: int, count_f: int) -> int:
+    start_f = int(max(0, start_f))
+    count_f = int(max(1, count_f))
+
+    with np.load(track_path, allow_pickle=False) as npz:
+        quad = np.asarray(npz["quad"])
+        total = int(quad.shape[0])
+        end_f = int(min(total, start_f + count_f))
+        out: dict[str, object] = {}
+        for k in npz.files:
+            arr = npz[k]
+            if np.ndim(arr) > 0 and int(arr.shape[0]) == total:
+                out[k] = arr[start_f:end_f]
+            else:
+                out[k] = arr
+
+    os.makedirs(os.path.dirname(os.path.abspath(out_path)) or ".", exist_ok=True)
+    np.savez_compressed(out_path, **out)
+    return max(0, end_f - start_f)
+
+
+def prepare_probe_assets(
+    video_path: str,
+    track_path: str,
+    *,
+    fps: float,
+    total_frames: int,
+    tmpdir: str,
+) -> tuple[str, str, int, int] | None:
+    if total_frames <= 0:
+        return None
+
+    probe_frames = int(max(90, min(int(max(1.0, fps) * 4.0), max(90, total_frames // 4))))
+    probe_start = int(max(0, min(total_frames - probe_frames, int(total_frames * 0.50 - probe_frames * 0.50))))
+
+    probe_video = os.path.join(tmpdir, f"probe_{probe_start}_{probe_start + probe_frames - 1}.mp4")
+    probe_track = os.path.join(tmpdir, f"probe_{probe_start}_{probe_start + probe_frames - 1}.npz")
+
+    if not _extract_probe_video(video_path, probe_start, probe_frames, probe_video):
+        return None
+    actual_frames = _slice_track_file(track_path, probe_track, probe_start, probe_frames)
+    if actual_frames <= 0:
+        return None
+    return probe_video, probe_track, probe_start, actual_frames
+
+
 # ----------------------------
 # Running erase_mouth_offline.py candidates
 # ----------------------------
@@ -347,7 +511,7 @@ def score_mouthless(video_in: str, video_out: str, track: Track, n_out: int, nor
 def run_erase(erase_py: str, video: str, track_path: str, out_path: str,
              valid_policy: str, ref_frame: int, coverage: float, keep_audio: bool,
              shading: str, debug_dir: str = "") -> int:
-    cmd = [sys.executable, erase_py,
+    cmd = [resolve_python_subprocess_executable(), erase_py,
            "--video", video,
            "--track", track_path,
            "--out", out_path,
@@ -360,6 +524,13 @@ def run_erase(erase_py: str, video: str, track_path: str, out_path: str,
     if debug_dir:
         cmd += ["--debug", debug_dir]
     return subprocess.call(cmd)
+
+
+def _candidate_output_path(tmpdir: str, candidate: EraseCandidate, prefix: str = "out") -> str:
+    return os.path.join(
+        tmpdir,
+        f"{prefix}_{candidate.valid_policy}_cov{candidate.coverage:.2f}.mp4",
+    )
 
 
 def main() -> int:
@@ -379,6 +550,7 @@ def main() -> int:
     ap.add_argument("--norm-w", type=int, default=0)
     ap.add_argument("--norm-h", type=int, default=0)
     ap.add_argument("--qa-samples", type=int, default=12)
+    ap.add_argument("--probe-topk", type=int, default=2, help="number of full candidates kept after probe ranking")
     ap.add_argument("--debug", default="", help="optional debug dir (best candidate only)")
     args = ap.parse_args()
 
@@ -407,6 +579,7 @@ def main() -> int:
     vid_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
     vid_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+    fps = float(cap.get(cv2.CAP_PROP_FPS) or 30.0)
     cap.release()
     if vid_w <= 0 or vid_h <= 0:
         print("[error] invalid video size", file=sys.stderr)
@@ -437,78 +610,180 @@ def main() -> int:
         norm_h = int(round(norm_w / max(0.25, min(4.0, ratio))))
     norm_h = ensure_even_ge2(max(64, norm_h))
 
-    coverages = []
-    for s in args.coverage.split(","):
-        s = s.strip()
-        if not s:
-            continue
-        coverages.append(float(s))
-    if not coverages:
-        coverages = [0.60, 0.70, 0.80]
-
-    # choose ref frame
-    if args.ref_mode == "first":
-        ref_idx = int(np.where(track.valid[:n_out])[0][0]) if track.valid[:n_out].any() else 0
-    elif args.ref_mode == "confidence":
-        if track.confidence is None:
-            ref_idx = int(np.where(track.valid[:n_out])[0][0]) if track.valid[:n_out].any() else 0
-        else:
-            m = track.confidence[:n_out].copy()
-            m[~track.valid[:n_out]] = -1.0
-            ref_idx = int(np.argmax(m))
-    else:
-        ref_idx = choose_ref_frame_smart(args.video, track, n_out=n_out, norm_w=norm_w, norm_h=norm_h, coverage_for_mask=coverages[0])
-    print(f"[auto_erase] ref_frame={ref_idx} (mode={args.ref_mode})")
-
     policies = [args.valid_policy]
     if args.try_strict and "strict" not in policies:
         policies.append("strict")
+    coverages = parse_coverages(args.coverage)
+    candidates = build_erase_candidates(policies, coverages)
+
+    # choose ref frame
+    ref_idx = select_ref_frame(
+        args.video,
+        track,
+        n_out=n_out,
+        norm_w=norm_w,
+        norm_h=norm_h,
+        ref_mode=args.ref_mode,
+        coverage_for_mask=coverages[0],
+        ref_topk=args.ref_topk,
+    )
+    print(f"[auto_erase] ref_frame={ref_idx} (mode={args.ref_mode})")
 
     tmpdir = tempfile.mkdtemp(prefix="auto_erase_")
     best = None
     best_score = float("inf")
-    best_meta = ""
+    best_candidate: EraseCandidate | None = None
 
     try:
-        for pol in policies:
-            for cov in coverages:
-                out_tmp = os.path.join(tmpdir, f"out_{pol}_cov{cov:.2f}.mp4")
-                print(f"[auto_erase] run policy={pol} coverage={cov:.2f}")
-                rc = run_erase(erase_py, args.video, args.track, out_tmp,
-                               valid_policy=pol, ref_frame=ref_idx, coverage=cov,
-                               keep_audio=args.keep_audio, shading=args.shading,
-                               debug_dir="")
+        ranked_candidates = list(candidates)
+
+        if should_enable_probe(total_frames, fps, len(candidates)):
+            probe_assets = prepare_probe_assets(
+                args.video,
+                args.track,
+                fps=fps,
+                total_frames=n_out,
+                tmpdir=tmpdir,
+            )
+            if probe_assets is not None:
+                probe_video, probe_track_path, probe_start, probe_frames = probe_assets
+                probe_track = load_track(probe_track_path, vid_w, vid_h, policy=args.valid_policy)
+                probe_n_out = min(probe_frames, probe_track.total)
+                probe_quads = probe_track.filled[:probe_n_out]
+                p_ws = np.array([quad_wh(q)[0] for q in probe_quads], dtype=np.float32)
+                p_hs = np.array([quad_wh(q)[1] for q in probe_quads], dtype=np.float32)
+                p_ratio = float(np.median(p_ws / np.maximum(1e-6, p_hs)))
+                probe_norm_w = ensure_even_ge2(max(96, int(round(float(np.percentile(p_ws, 95)) * float(args.oversample)))))
+                probe_norm_h = ensure_even_ge2(max(64, int(round(probe_norm_w / max(0.25, min(4.0, p_ratio))))))
+
+                probe_ref_idx = select_ref_frame(
+                    probe_video,
+                    probe_track,
+                    n_out=probe_n_out,
+                    norm_w=probe_norm_w,
+                    norm_h=probe_norm_h,
+                    ref_mode=args.ref_mode,
+                    coverage_for_mask=coverages[0],
+                    ref_topk=args.ref_topk,
+                )
+
+                print(
+                    f"[auto_erase] probe enabled start={probe_start} frames={probe_frames} "
+                    f"candidates={len(candidates)}"
+                )
+
+                probe_scores: list[tuple[float, EraseCandidate]] = []
+                for cand in candidates:
+                    out_probe = _candidate_output_path(tmpdir, cand, prefix="probe")
+                    print(
+                        f"[auto_erase] probe policy={cand.valid_policy} "
+                        f"coverage={cand.coverage:.2f}"
+                    )
+                    rc = run_erase(
+                        erase_py,
+                        probe_video,
+                        probe_track_path,
+                        out_probe,
+                        valid_policy=cand.valid_policy,
+                        ref_frame=probe_ref_idx,
+                        coverage=cand.coverage,
+                        keep_audio=False,
+                        shading=args.shading,
+                        debug_dir="",
+                    )
+                    if rc != 0 or (not os.path.isfile(out_probe)):
+                        print(f"[auto_erase]   -> probe failed rc={rc}")
+                        continue
+
+                    s_probe = score_mouthless(
+                        probe_video,
+                        out_probe,
+                        probe_track,
+                        n_out=probe_n_out,
+                        norm_w=probe_norm_w,
+                        norm_h=probe_norm_h,
+                        coverage=cand.coverage,
+                        n_samples=max(6, min(int(args.qa_samples), 10)),
+                    )
+                    print(f"[auto_erase]   probe_score={s_probe:.4f} (lower is better)")
+                    probe_scores.append((float(s_probe), cand))
+
+                if probe_scores:
+                    probe_scores.sort(key=lambda t: t[0])
+                    keep_top_n = max(1, min(int(args.probe_topk), len(probe_scores)))
+                    ranked_candidates = [cand for (_score, cand) in probe_scores[:keep_top_n]]
+                    print("[auto_erase] probe ranking:")
+                    for rank, (probe_score, cand) in enumerate(probe_scores[:min(5, len(probe_scores))], start=1):
+                        print(
+                            f"[auto_erase]   {rank}) policy={cand.valid_policy} "
+                            f"coverage={cand.coverage:.2f} score={probe_score:.4f}"
+                        )
+                    print(
+                        f"[auto_erase] full run candidates reduced: "
+                        f"{len(candidates)} -> {len(ranked_candidates)}"
+                    )
+
+        for cand in ranked_candidates:
+                out_tmp = _candidate_output_path(tmpdir, cand)
+                print(
+                    f"[auto_erase] run policy={cand.valid_policy} "
+                    f"coverage={cand.coverage:.2f}"
+                )
+                rc = run_erase(
+                    erase_py,
+                    args.video,
+                    args.track,
+                    out_tmp,
+                    valid_policy=cand.valid_policy,
+                    ref_frame=ref_idx,
+                    coverage=cand.coverage,
+                    keep_audio=args.keep_audio,
+                    shading=args.shading,
+                    debug_dir="",
+                )
                 if rc != 0 or (not os.path.isfile(out_tmp)):
                     print(f"[auto_erase]   -> failed rc={rc}")
                     continue
 
                 s = score_mouthless(args.video, out_tmp, track, n_out=n_out, norm_w=norm_w, norm_h=norm_h,
-                                    coverage=cov, n_samples=int(args.qa_samples))
+                                    coverage=cand.coverage, n_samples=int(args.qa_samples))
                 print(f"[auto_erase]   qa_score={s:.4f} (lower is better)")
                 if s < best_score:
                     best_score = s
                     best = out_tmp
-                    best_meta = f"policy={pol}, coverage={cov:.2f}, ref={ref_idx}"
+                    best_candidate = cand
         if best is None:
             print("[auto_erase] no candidate succeeded", file=sys.stderr)
             return 3
 
         # If debug dir requested, re-run best candidate with debug enabled
-        if args.debug:
+        if args.debug and best_candidate is not None:
             os.makedirs(args.debug, exist_ok=True)
-            # parse best coverage/policy from best_meta
-            pol = "hold" if "policy=hold" in best_meta else "strict"
-            cov = float(best_meta.split("coverage=")[1].split(",")[0])
             out_dbg = os.path.join(tmpdir, "out_best_debug.mp4")
-            run_erase(erase_py, args.video, args.track, out_dbg,
-                     valid_policy=pol, ref_frame=ref_idx, coverage=cov,
-                     keep_audio=args.keep_audio, shading=args.shading,
-                     debug_dir=args.debug)
+            run_erase(
+                erase_py,
+                args.video,
+                args.track,
+                out_dbg,
+                valid_policy=best_candidate.valid_policy,
+                ref_frame=ref_idx,
+                coverage=best_candidate.coverage,
+                keep_audio=args.keep_audio,
+                shading=args.shading,
+                debug_dir=args.debug,
+            )
             if os.path.isfile(out_dbg):
                 best = out_dbg
 
         os.makedirs(os.path.dirname(os.path.abspath(args.out)) or ".", exist_ok=True)
         shutil.copy2(best, args.out)
+        if best_candidate is not None:
+            best_meta = (
+                f"policy={best_candidate.valid_policy}, "
+                f"coverage={best_candidate.coverage:.2f}, ref={ref_idx}"
+            )
+        else:
+            best_meta = f"ref={ref_idx}"
         print(f"[auto_erase] [OK] best: {best_meta} qa_score={best_score:.4f} -> {args.out}")
         return 0
     finally:

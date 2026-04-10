@@ -18,33 +18,41 @@ import numpy as np
 
 def convert_npz_to_json(npz_path: Path, output_dir: Path) -> Path:
     """npzファイルをJSONに変換"""
-    data = np.load(npz_path, allow_pickle=True)
-
-    # メタデータ
-    result = {
-        "fps": float(data["fps"]),
-        "width": int(data["w"]),
-        "height": int(data["h"]),
-        "refSpriteSize": [int(data["ref_sprite_w"]), int(data["ref_sprite_h"])],
-        "calibration": {
-            "offset": data["calib_offset"].tolist(),
-            "scale": float(data["calib_scale"]),
-            "rotation": float(data["calib_rotation"]),
-        },
-        "calibrationApplied": False,
-        "frames": [],
-    }
-
-    # フレームデータ
-    quads = data["quad"]
-    valids = data["valid"]
-
-    for i in range(len(quads)):
-        frame = {
-            "quad": quads[i].tolist(),  # [[x,y], [x,y], [x,y], [x,y]]
-            "valid": bool(valids[i]),
+    with np.load(npz_path, allow_pickle=False) as data:
+        required = {
+            "fps", "w", "h",
+            "ref_sprite_w", "ref_sprite_h",
+            "calib_offset", "calib_scale", "calib_rotation",
+            "quad", "valid",
         }
-        result["frames"].append(frame)
+        missing = required - set(data.files)
+        if missing:
+            raise ValueError(f"missing keys: {sorted(missing)}")
+        # メタデータ
+        result = {
+            "fps": float(data["fps"]),
+            "width": int(data["w"]),
+            "height": int(data["h"]),
+            "refSpriteSize": [int(data["ref_sprite_w"]), int(data["ref_sprite_h"])],
+            "calibration": {
+                "offset": data["calib_offset"].tolist(),
+                "scale": float(data["calib_scale"]),
+                "rotation": float(data["calib_rotation"]),
+            },
+            "calibrationApplied": False,
+            "frames": [],
+        }
+
+        # フレームデータ
+        quads = data["quad"]
+        valids = data["valid"]
+
+        for i in range(len(quads)):
+            frame = {
+                "quad": quads[i].tolist(),  # [[x,y], [x,y], [x,y], [x,y]]
+                "valid": bool(valids[i]),
+            }
+            result["frames"].append(frame)
 
     # 出力
     output_dir.mkdir(parents=True, exist_ok=True)

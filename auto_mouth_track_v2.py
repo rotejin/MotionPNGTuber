@@ -31,6 +31,9 @@ from typing import Dict, List, Optional, Tuple
 import cv2
 import numpy as np
 
+from image_io import write_image_file
+from python_exec import resolve_python_subprocess_executable
+
 
 @dataclass
 class Metrics:
@@ -189,12 +192,13 @@ def save_best_debug_outputs(debug_dir: str, best_npz: str, report: dict) -> None
                     colors[k % len(colors)], 2, cv2.LINE_AA)
 
     png_path = os.path.join(debug_dir, "auto_best.png")
-    cv2.imwrite(png_path, img)
+    if not write_image_file(png_path, img):
+        raise RuntimeError(f"Failed to save debug image: {png_path}")
 
 
 
 def run_detector(detector_py: str, args_map: Dict[str, Optional[str]]) -> int:
-    cmd: List[str] = [sys.executable, detector_py]
+    cmd: List[str] = [resolve_python_subprocess_executable(), detector_py]
     for k, v in args_map.items():
         if v is None:
             continue
@@ -384,8 +388,16 @@ def _segment_repair(video: str, detector_py: str, best_npz: str,
         before = compute_metrics_npz(best_npz)
         after = compute_metrics_npz(work_npz)
         if score(after) >= score(before) + 0.02:  # require some improvement
-            repaired = os.path.join(tmpdir, "repaired.npz")
-            shutil.copy2(work_npz, repaired)
+            fd, repaired = tempfile.mkstemp(prefix="auto_track_seg_repaired_", suffix=".npz")
+            os.close(fd)
+            try:
+                shutil.copy2(work_npz, repaired)
+            except Exception:
+                try:
+                    os.unlink(repaired)
+                except OSError:
+                    pass
+                raise
             return repaired
         return None
     finally:
@@ -705,6 +717,7 @@ def main() -> int:
     best_path: Optional[str] = None
     best_metrics: Optional[Metrics] = None
     best_tag: Optional[str] = None
+    segment_repair_tmp: Optional[str] = None
 
     probe_enabled = False
     probe_video: Optional[str] = None
@@ -870,6 +883,7 @@ def main() -> int:
                     max_segments=int(args.max_segments),
                 )
                 if repaired and os.path.isfile(repaired):
+                    segment_repair_tmp = repaired
                     met2 = compute_metrics_npz(repaired)
                     sc2 = score(met2)
                     if sc2 > best_score:
@@ -926,6 +940,12 @@ def main() -> int:
         return 0
 
     finally:
+        if segment_repair_tmp:
+            try:
+                if os.path.isfile(segment_repair_tmp):
+                    os.unlink(segment_repair_tmp)
+            except OSError:
+                pass
         shutil.rmtree(tmpdir, ignore_errors=True)
 
 

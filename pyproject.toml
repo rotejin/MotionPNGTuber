@@ -5,10 +5,10 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = "==3.10.*"
 dependencies = [
-    "anime-face-detector==0.0.9",
-    "mmcv-full==1.7.0",
-    "mmdet==2.28.0",
-    "mmpose==0.29.0",
+    "anime-face-detector==0.0.9 ; sys_platform == 'win32' or sys_platform == 'linux'",
+    "mmcv-full==1.7.0 ; sys_platform == 'win32' or sys_platform == 'linux'",
+    "mmdet==2.28.0 ; sys_platform == 'win32' or sys_platform == 'linux'",
+    "mmpose==0.29.0 ; sys_platform == 'win32' or sys_platform == 'linux'",
     "numpy>=1.24.0,<2.0.0",
     "opencv-python>=4.8.0",
     "openmim>=0.3.9",
@@ -17,8 +17,8 @@ dependencies = [
     "scipy>=1.10.0",
     "setuptools>=60.0.0,<70.0.0",
     "sounddevice>=0.4.6",
-    "torch==1.13.1+cu117",
-    "torchvision==0.14.1+cu117"
+    "torch==1.13.1+cu117 ; sys_platform == 'win32' or sys_platform == 'linux'",
+    "torchvision==0.14.1+cu117 ; sys_platform == 'win32' or sys_platform == 'linux'"
 ]
 
 [tool.uv]
@@ -26,13 +26,24 @@ override-dependencies = [
     # headless版を無効化してGUI版のopencv-pythonを使用
     "opencv-python-headless>=4.5.4.58 ; sys_platform == 'never'",
 ]
-extra-index-url = [
-    "https://download.pytorch.org/whl/cu117",
-]
-index-strategy = "unsafe-best-match"
+index-strategy = "first-index"
+
+[[tool.uv.index]]
+name = "pytorch-cu117"
+url = "https://download.pytorch.org/whl/cu117"
+explicit = true
 
 [tool.uv.sources]
-mmcv-full = { url = "https://download.openmmlab.com/mmcv/dist/cu117/torch1.13.0/mmcv_full-1.7.0-cp310-cp310-win_amd64.whl" }
+torch = [
+    { index = "pytorch-cu117", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+]
+torchvision = [
+    { index = "pytorch-cu117", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+]
+mmcv-full = [
+    { url = "https://download.openmmlab.com/mmcv/dist/cu117/torch1.13.0/mmcv_full-1.7.0-cp310-cp310-manylinux1_x86_64.whl", marker = "sys_platform == 'linux'" },
+    { url = "https://download.openmmlab.com/mmcv/dist/cu117/torch1.13.0/mmcv_full-1.7.0-cp310-cp310-win_amd64.whl", marker = "sys_platform == 'win32'" },
+]
 
 [tool.uv.extra-build-dependencies]
 chumpy = ["wheel", "pip", "setuptools"]

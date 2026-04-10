@@ -36,6 +36,14 @@ from dataclasses import dataclass
 import cv2
 import numpy as np
 
+from image_io import read_image_bgra
+from mouth_color_adjust import (
+    MouthColorAdjust,
+    apply_inspect_boost_3ch,
+    apply_mouth_color_adjust_4ch,
+    clamp_mouth_color_adjust,
+)
+
 
 # Windows の cv2.waitKeyEx が返す矢印キーコード
 ARROW_LEFT = 2424832
@@ -44,26 +52,22 @@ ARROW_RIGHT = 2555904
 ARROW_DOWN = 2621440
 
 
-def load_rgba(path: str) -> np.ndarray:
-    img = cv2.imread(path, cv2.IMREAD_UNCHANGED)
-    if img is None:
+def load_bgra(path: str) -> np.ndarray:
+    img_bgra = read_image_bgra(path)
+    if img_bgra is None:
         raise FileNotFoundError(path)
-    if img.ndim != 3 or img.shape[2] not in (3, 4):
-        raise ValueError("sprite must be 3 or 4 channel image")
-    if img.shape[2] == 3:
-        a = np.full(img.shape[:2] + (1,), 255, dtype=np.uint8)
-        img = np.concatenate([img, a], axis=2)
-    return img
+    return img_bgra
 
 
-def warp_rgba_to_quad(src_rgba: np.ndarray, dst_quad: np.ndarray, out_w: int, out_h: int) -> np.ndarray:
-    sh, sw = src_rgba.shape[:2]
+def warp_sprite_to_quad(src_sprite_4ch: np.ndarray, dst_quad: np.ndarray, out_w: int, out_h: int) -> np.ndarray:
+    """Warp a 4-channel sprite in OpenCV-native order into a destination quad."""
+    sh, sw = src_sprite_4ch.shape[:2]
     # OpenCV の射影変換は端点を含む座標系の方がズレが少ない
     src_quad = np.array([[0, 0], [sw - 1, 0], [sw - 1, sh - 1], [0, sh - 1]], dtype=np.float32)
     dst = np.asarray(dst_quad, dtype=np.float32).reshape(4, 2)
     M = cv2.getPerspectiveTransform(src_quad, dst)
     warped = cv2.warpPerspective(
-        src_rgba,
+        src_sprite_4ch,
         M,
         (int(out_w), int(out_h)),
         flags=cv2.INTER_LINEAR,
@@ -73,11 +77,12 @@ def warp_rgba_to_quad(src_rgba: np.ndarray, dst_quad: np.ndarray, out_w: int, ou
     return warped
 
 
-def alpha_blend_full(dst_bgr: np.ndarray, src_rgba_full: np.ndarray) -> np.ndarray:
-    if src_rgba_full.shape[:2] != dst_bgr.shape[:2]:
+def alpha_blend_sprite_over_bgr(dst_bgr: np.ndarray, src_sprite_4ch_full: np.ndarray) -> np.ndarray:
+    """Alpha-blend a 4-channel OpenCV-native sprite over a BGR frame."""
+    if src_sprite_4ch_full.shape[:2] != dst_bgr.shape[:2]:
         raise ValueError("size mismatch")
-    a = (src_rgba_full[:, :, 3:4].astype(np.float32) / 255.0)
-    out = dst_bgr.astype(np.float32) * (1.0 - a) + src_rgba_full[:, :, :3].astype(np.float32) * a
+    a = (src_sprite_4ch_full[:, :, 3:4].astype(np.float32) / 255.0)
+    out = dst_bgr.astype(np.float32) * (1.0 - a) + src_sprite_4ch_full[:, :, :3].astype(np.float32) * a
     return np.clip(out, 0, 255).astype(np.uint8)
 
 
@@ -133,7 +138,25 @@ def main() -> int:
     ap.add_argument("--frame", type=int, default=0, help="開始フレーム (プレビュー用)")
     ap.add_argument("--ui-max-w", type=int, default=720)
     ap.add_argument("--ui-max-h", type=int, default=1280)
+    ap.add_argument("--mouth-brightness", type=float, default=0.0)
+    ap.add_argument("--mouth-saturation", type=float, default=1.0)
+    ap.add_argument("--mouth-warmth", type=float, default=0.0)
+    ap.add_argument("--mouth-color-strength", type=float, default=0.75)
+    ap.add_argument("--mouth-edge-priority", type=float, default=0.85)
+    ap.add_argument("--mouth-edge-width-ratio", type=float, default=0.10)
+    ap.add_argument("--mouth-inspect-boost", type=float, default=1.0)
     args = ap.parse_args()
+    color_cfg = clamp_mouth_color_adjust(
+        MouthColorAdjust(
+            brightness=float(args.mouth_brightness),
+            saturation=float(args.mouth_saturation),
+            warmth=float(args.mouth_warmth),
+            color_strength=float(args.mouth_color_strength),
+            edge_priority=float(args.mouth_edge_priority),
+            edge_width_ratio=float(args.mouth_edge_width_ratio),
+            inspect_boost=float(args.mouth_inspect_boost),
+        ),
+    )
 
     track = np.load(args.track, allow_pickle=False)
     quads = track["quad"].astype(np.float32).copy()
@@ -160,7 +183,11 @@ def main() -> int:
             raise RuntimeError(f"Failed to read frame {idx}")
         return frame
 
-    spr = load_rgba(args.sprite)
+    sprite_bgra = apply_mouth_color_adjust_4ch(
+        load_bgra(args.sprite),
+        color_cfg,
+        color_order="BGRA",
+    )
 
     # 既存のキャリブレーション値がある場合の処理
     # NOTE: 保存時に quads には既にキャリブレーションが適用済み。
@@ -245,16 +272,19 @@ def main() -> int:
     cv2.setMouseCallback(win, on_mouse)
 
     print("[calib] L-drag: move | wheel: scale (Ctrl=fine) | R-drag: rotate")
-    print("[calib] arrows: nudge | +/-: scale | z/x: rotate | [/]: frame | r: reset(neutral) | Space/Enter: confirm | q/Esc: quit")
+    print("[calib] arrows/WASD: nudge | +/-: scale | z/x: rotate | [/]: frame | v: inspect | r: reset(neutral) | Space/Enter: confirm | q/Esc: quit")
 
     nudge = 1.0
+    inspect_levels = (1.0, 2.0, 3.0, 4.0)
+    inspect_boost = min(inspect_levels, key=lambda x: abs(x - float(color_cfg.inspect_boost)))
     try:
         while True:
             transformed_quad = transform_quad(orig_quad, offset, scale, rotation)
             vis = base_bgr.copy()
-            warped = warp_rgba_to_quad(spr, transformed_quad, vid_w, vid_h)
-            vis = alpha_blend_full(vis, warped)
+            warped = warp_sprite_to_quad(sprite_bgra, transformed_quad, vid_w, vid_h)
+            vis = alpha_blend_sprite_over_bgr(vis, warped)
             vis = draw_quad(vis, transformed_quad, color=(0, 255, 0), thickness=2)
+            vis = apply_inspect_boost_3ch(vis, inspect_boost, color_order="BGR")
 
             tw, th = quad_size(transformed_quad)
             cv2.putText(
@@ -279,10 +309,20 @@ def main() -> int:
             )
             cv2.putText(
                 vis,
-                f"quad size: {tw:.1f}x{th:.1f} (original: {orig_w:.1f}x{orig_h:.1f})",
+                f"quad size: {tw:.1f}x{th:.1f} (original: {orig_w:.1f}x{orig_h:.1f}) inspect={inspect_boost:.1f}",
                 (10, 90),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.7,
+                (255, 255, 255),
+                2,
+                cv2.LINE_AA,
+            )
+            cv2.putText(
+                vis,
+                f"bri={color_cfg.brightness:.0f} sat={color_cfg.saturation:.2f} warm={color_cfg.warmth:.0f} edge={color_cfg.edge_priority:.2f}",
+                (10, 120),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.65,
                 (255, 255, 255),
                 2,
                 cv2.LINE_AA,
@@ -306,13 +346,13 @@ def main() -> int:
                 break
 
             step = float(nudge)
-            if key == ARROW_LEFT:
+            if key in (ARROW_LEFT, ord("a"), ord("A")):
                 offset[0] -= step
-            elif key == ARROW_RIGHT:
+            elif key in (ARROW_RIGHT, ord("d"), ord("D")):
                 offset[0] += step
-            elif key == ARROW_UP:
+            elif key in (ARROW_UP, ord("w"), ord("W")):
                 offset[1] -= step
-            elif key == ARROW_DOWN:
+            elif key in (ARROW_DOWN, ord("s"), ord("S")):
                 offset[1] += step
             elif key in (ord("+"), ord("=")):
                 scale *= 1.02
@@ -330,6 +370,9 @@ def main() -> int:
                 offset = init_offset.copy()
                 scale = float(init_scale)
                 rotation = float(init_rotation)
+            elif key in (ord("v"), ord("V")):
+                cur_idx = inspect_levels.index(inspect_boost) if inspect_boost in inspect_levels else 0
+                inspect_boost = inspect_levels[(cur_idx + 1) % len(inspect_levels)]
             elif key in (ord(","), ord("<")):
                 nudge = max(0.1, nudge / 1.5)
             elif key in (ord("."), ord(">")):

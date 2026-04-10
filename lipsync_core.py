@@ -14,6 +14,7 @@ from __future__ import annotations
 import os
 import time
 from dataclasses import dataclass
+from collections import deque
 
 import cv2
 import numpy as np
@@ -180,6 +181,86 @@ def alpha_bbox(rgba: np.ndarray, thresh: int = 8) -> tuple | None:
     x0, x1 = int(xs.min()), int(xs.max()) + 1
     y0, y1 = int(ys.min()), int(ys.max()) + 1
     return x0, y0, x1, y1
+
+
+def resolve_preferred_track_path(
+    base_track: str,
+    calibrated_track: str = "",
+    prefer_calibrated: bool = True,
+) -> str:
+    """Prefer calibrated track when available, otherwise fall back to base track."""
+    if prefer_calibrated and calibrated_track and os.path.isfile(calibrated_track):
+        return calibrated_track
+    return base_track
+
+
+class AudioChunkBuffer:
+    """Bounded audio chunk buffer optimized for sliding-window inference."""
+
+    def __init__(self, max_samples: int):
+        self.max_samples = max(1, int(max_samples))
+        self._chunks: deque[np.ndarray] = deque()
+        self._size = 0
+
+    def __len__(self) -> int:
+        return self._size
+
+    def clear(self) -> None:
+        self._chunks.clear()
+        self._size = 0
+
+    def append(self, chunk: np.ndarray) -> None:
+        arr = np.asarray(chunk, dtype=np.float32).reshape(-1)
+        if arr.size <= 0:
+            return
+
+        # The audio callback may reuse the source buffer, so keep an owned copy.
+        if arr.size >= self.max_samples:
+            self._chunks.clear()
+            self._chunks.append(arr[-self.max_samples:].copy())
+            self._size = self.max_samples
+            return
+
+        self._chunks.append(arr.copy())
+        self._size += int(arr.size)
+        self._trim_left()
+
+    def tail(self, n_samples: int) -> np.ndarray:
+        n = max(0, min(int(n_samples), self._size))
+        if n <= 0:
+            return np.zeros((0,), dtype=np.float32)
+
+        parts: list[np.ndarray] = []
+        remaining = n
+        for chunk in reversed(self._chunks):
+            if remaining <= 0:
+                break
+            if chunk.size <= remaining:
+                parts.append(chunk)
+                remaining -= int(chunk.size)
+            else:
+                parts.append(chunk[-remaining:])
+                remaining = 0
+
+        parts.reverse()
+        if not parts:
+            return np.zeros((0,), dtype=np.float32)
+        if len(parts) == 1:
+            return parts[0].copy()
+        return np.concatenate(parts, axis=0)
+
+    def _trim_left(self) -> None:
+        while self._size > self.max_samples and self._chunks:
+            overflow = self._size - self.max_samples
+            head = self._chunks[0]
+            if overflow >= head.size:
+                self._chunks.popleft()
+                self._size -= int(head.size)
+                continue
+
+            self._chunks[0] = head[overflow:]
+            self._size -= int(overflow)
+            break
 
 
 # ============================================================
@@ -547,14 +628,19 @@ def load_mouth_sprites(mouth_dir: str, full_w: int, full_h: int) -> dict[str, np
         else:
             sx, sy = 1.00, 1.00
 
-        rw = max(2, int(round(w * sx)))
-        rh = max(2, int(round(h * sy)))
+        # open.png から派生形状を自動生成する場合、e 形状のように横幅が元画像を
+        # 上回るケースがある。元キャンバス外にはみ出すとブロードキャスト代入が
+        # 失敗するため、貼り付け前に必ずキャンバス内へ収める。
+        rw = max(2, min(int(round(w * sx)), w))
+        rh = max(2, min(int(round(h * sy)), h))
         small = cv2.resize(open_rgba, (rw, rh), interpolation=cv2.INTER_AREA)
 
         canvas = np.zeros((h, w, 4), dtype=np.uint8)
-        x0 = (w - rw) // 2
-        y0 = h - rh
-        canvas[y0:y0 + rh, x0:x0 + rw] = small
+        x0 = max(0, (w - rw) // 2)
+        y0 = max(0, (h - rh) // 2)
+        paste_w = min(rw, w - x0)
+        paste_h = min(rh, h - y0)
+        canvas[y0:y0 + paste_h, x0:x0 + paste_w] = small[:paste_h, :paste_w]
 
         if key == "closed":
             canvas[..., 3] = (canvas[..., 3].astype(np.float32) * 0.85).astype(np.uint8)

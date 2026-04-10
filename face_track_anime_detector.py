@@ -37,10 +37,12 @@ import json
 import shutil
 import sys
 import time
-from typing import Optional, Tuple
+from typing import Any, Optional, Tuple
 
 import cv2
 import numpy as np
+
+from image_io import write_image_file
 
 # anime-face-detector
 try:
@@ -55,6 +57,77 @@ except ImportError:
 
 # ランドマークのインデックス定義
 MOUTH_OUTLINE = [24, 25, 26, 27]  # 口の4点
+
+
+def _bbox_center_area(bbox: np.ndarray) -> tuple[np.ndarray, float, float]:
+    bb = np.asarray(bbox, dtype=np.float32).reshape(-1)
+    x1, y1, x2, y2 = [float(v) for v in bb[:4]]
+    w = max(1.0, x2 - x1)
+    h = max(1.0, y2 - y1)
+    center = np.array([(x1 + x2) * 0.5, (y1 + y2) * 0.5], dtype=np.float32)
+    area = float(w * h)
+    diag = float(np.hypot(w, h))
+    return center, area, diag
+
+
+def select_target_prediction(
+    preds: list[dict],
+    *,
+    prev_bbox: np.ndarray | None = None,
+    min_conf: float = 0.0,
+) -> dict | None:
+    """Select face prediction with continuity preference.
+
+    - First frame / no history: keep behavior close to the original by
+      preferring the largest sufficiently confident face.
+    - With history: prefer the face whose bbox is spatially and
+      scale-wise closest to the previous selection, while still
+      considering confidence and size.
+    """
+    if not preds:
+        return None
+
+    candidates = [p for p in preds if "bbox" in p]
+    if not candidates:
+        return None
+
+    strong = []
+    for pred in candidates:
+        bb = np.asarray(pred["bbox"], dtype=np.float32).reshape(-1)
+        conf = float(bb[4]) if bb.shape[0] >= 5 else 1.0
+        if conf >= float(min_conf):
+            strong.append(pred)
+    if strong:
+        candidates = strong
+
+    if prev_bbox is None:
+        return max(
+            candidates,
+            key=lambda p: (
+                (float(np.asarray(p["bbox"], dtype=np.float32).reshape(-1)[2]) -
+                 float(np.asarray(p["bbox"], dtype=np.float32).reshape(-1)[0])) *
+                (float(np.asarray(p["bbox"], dtype=np.float32).reshape(-1)[3]) -
+                 float(np.asarray(p["bbox"], dtype=np.float32).reshape(-1)[1])),
+                float(np.asarray(p["bbox"], dtype=np.float32).reshape(-1)[4])
+                if np.asarray(p["bbox"], dtype=np.float32).reshape(-1).shape[0] >= 5
+                else 1.0,
+            ),
+        )
+
+    prev_center, prev_area, prev_diag = _bbox_center_area(prev_bbox)
+
+    def _score(pred: dict) -> float:
+        bb = np.asarray(pred["bbox"], dtype=np.float32).reshape(-1)
+        center, area, _diag = _bbox_center_area(bb)
+        conf = float(bb[4]) if bb.shape[0] >= 5 else 1.0
+        dist = float(np.linalg.norm(center - prev_center) / max(1.0, prev_diag))
+        size_ratio = float(max(area, prev_area) / max(1.0, min(area, prev_area)))
+        continuity = 1.0 / (1.0 + dist)
+        size_consistency = 1.0 / (1.0 + abs(np.log(max(1e-6, size_ratio))))
+        area_bonus = float(np.log(max(1.0, area)))
+        return (3.0 * continuity) + (1.2 * size_consistency) + (0.3 * conf) + (0.02 * area_bonus)
+
+    return max(candidates, key=_score)
 
 
 def ensure_even(n: int) -> int:
@@ -669,7 +742,8 @@ def save_metrics_png(path: str, series: dict[str, np.ndarray], title: str = "") 
         N = max(N, int(len(v)))
     if N <= 1:
         os.makedirs(os.path.dirname(os.path.abspath(path)) or ".", exist_ok=True)
-        cv2.imwrite(path, img)
+        if not write_image_file(path, img):
+            raise RuntimeError(f"Failed to save metrics image: {path}")
         return
 
     def norm_y(name: str, y: np.ndarray) -> np.ndarray:
@@ -703,7 +777,8 @@ def save_metrics_png(path: str, series: dict[str, np.ndarray], title: str = "") 
                     colors[k % len(colors)], 2, cv2.LINE_AA)
 
     os.makedirs(os.path.dirname(os.path.abspath(path)) or ".", exist_ok=True)
-    cv2.imwrite(path, img)
+    if not write_image_file(path, img):
+        raise RuntimeError(f"Failed to save metrics image: {path}")
 
 
 
@@ -833,6 +908,8 @@ def main() -> int:
     if use_tqdm and tqdm is not None:
         it = tqdm(it, total=n_frames, desc="Tracking", unit="frame", dynamic_ncols=True)
 
+    last_selected_bbox: np.ndarray | None = None
+
     for i in it:
         ok, frame = cap.read()
         if not ok:
@@ -864,15 +941,20 @@ def main() -> int:
 
         quad = None
         conf = 0.0
+        bbox = None
 
         if len(preds) > 0:
-            # 最も大きい(面積が大きい)顔を選択
-            best_pred = max(preds, key=lambda p: (p['bbox'][2] - p['bbox'][0]) * (p['bbox'][3] - p['bbox'][1]))
-            bbox = best_pred['bbox']
-            keypoints = best_pred['keypoints']
+            best_pred = select_target_prediction(
+                preds,
+                prev_bbox=last_selected_bbox,
+                min_conf=float(args.min_conf),
+            )
+            if best_pred is not None:
+                bbox = np.asarray(best_pred['bbox'], dtype=np.float32)
+                keypoints = np.asarray(best_pred['keypoints'], dtype=np.float32)
 
             # 顔検出の信頼度チェック
-            if bbox[4] >= args.min_conf:
+            if bbox is not None and bbox[4] >= args.min_conf:
                 if args.quad_mode == "bbox":
                     quad, conf = mouth_quad_from_face_bbox_and_landmarks(
                         bbox, keypoints,
@@ -896,6 +978,8 @@ def main() -> int:
             quads[i] = quad
             valid[i] = 1
             confidences[i] = conf
+            if bbox is not None:
+                last_selected_bbox = bbox.copy()
         else:
             # 検出失敗: 前フレームの値を仮保持 (後で補間)
             if i > 0:

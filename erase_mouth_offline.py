@@ -48,6 +48,8 @@ from typing import Optional, Tuple
 import cv2
 import numpy as np
 
+from image_io import write_image_file
+
 
 def ensure_even_ge2(n: int) -> int:
     n = int(n)
@@ -382,7 +384,8 @@ def save_debug_metrics(debug_dir: str, payload: dict, valid: np.ndarray) -> None
         pts = np.stack([xs, ys], axis=1).reshape(-1, 1, 2)
         cv2.polylines(img, [pts], False, (30, 30, 30), 2, cv2.LINE_AA)
     png_path = os.path.join(debug_dir, "metrics.png")
-    cv2.imwrite(png_path, img)
+    if not write_image_file(png_path, img):
+        raise RuntimeError(f"Failed to save debug image: {png_path}")
 
 
 
@@ -599,10 +602,15 @@ def main() -> int:
     # debug outputs
     if args.debug:
         os.makedirs(args.debug, exist_ok=True)
-        cv2.imwrite(os.path.join(args.debug, "ref_patch.png"), ref_patch)
-        cv2.imwrite(os.path.join(args.debug, "clean_patch.png"), clean_patch)
-        cv2.imwrite(os.path.join(args.debug, "mask_inner.png"), inner_u8)
-        cv2.imwrite(os.path.join(args.debug, "mask_ring.png"), ring_u8)
+        for name, image in (
+            ("ref_patch.png", ref_patch),
+            ("clean_patch.png", clean_patch),
+            ("mask_inner.png", inner_u8),
+            ("mask_ring.png", ring_u8),
+        ):
+            out_path = os.path.join(args.debug, name)
+            if not write_image_file(out_path, image):
+                raise RuntimeError(f"Failed to save debug image: {out_path}")
 
     # Prepare writer (silent)
     mux_audio = bool(args.keep_audio)
@@ -718,7 +726,9 @@ def main() -> int:
             q = quad.astype(np.int32).reshape(4, 2)
             cv2.polylines(dbg, [q], True, (0, 255, 0), 2, cv2.LINE_AA)
             cv2.putText(dbg, f"{i}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 255, 255), 2)
-            cv2.imwrite(os.path.join(args.debug, f"frame_{i:06d}.png"), dbg)
+            out_path = os.path.join(args.debug, f"frame_{i:06d}.png")
+            if not write_image_file(out_path, dbg):
+                raise RuntimeError(f"Failed to save debug frame: {out_path}")
 
         writer.write(frame)
 
