@@ -478,7 +478,7 @@ wheels = [
 [[package]]
 name = "motionpngtuber"
 version = "0.1.0"
-source = { virtual = "." }
+source = { editable = "." }
 dependencies = [
     { name = "anime-face-detector", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
     { name = "mmcv-full", version = "1.7.0", source = { url = "https://download.openmmlab.com/mmcv/dist/cu117/torch1.13.0/mmcv_full-1.7.0-cp310-cp310-manylinux1_x86_64.whl" }, marker = "sys_platform == 'linux'" },

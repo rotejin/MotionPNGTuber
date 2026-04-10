@@ -1,3 +1,7 @@
+[build-system]
+requires = ["setuptools>=60.0.0"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "motionpngtuber"
 version = "0.1.0"
@@ -47,6 +51,33 @@ mmcv-full = [
 
 [tool.uv.extra-build-dependencies]
 chumpy = ["wheel", "pip", "setuptools"]
+
+[project.scripts]
+mouth-track-gui = "mouth_track_gui:main"
+mouth-sprite-gui = "mouth_sprite_extractor_gui:main"
+mouth-sprite-extract = "motionpngtuber.mouth_sprite_extractor:main"
+auto-mouth-track = "auto_mouth_track_v2:main"
+auto-erase-mouth = "auto_erase_mouth:main"
+calibrate-mouth-track = "calibrate_mouth_track:main"
+erase-mouth-offline = "erase_mouth_offline:main"
+face-track-detect = "face_track_anime_detector:main"
+convert-npz-to-json = "convert_npz_to_json:main"
+lipsync-runtime = "loop_lipsync_runtime_patched_emotion_auto:main"
+
+[tool.setuptools]
+packages = ["motionpngtuber", "mouth_track_gui"]
+py-modules = [
+    "auto_erase_mouth",
+    "auto_mouth_track_v2",
+    "calibrate_mouth_track",
+    "convert_npz_to_json",
+    "erase_mouth_offline",
+    "face_track_anime_detector",
+    "loop_lipsync_runtime_patched_emotion_auto",
+    "mouth_sprite_extractor",
+    "mouth_sprite_extractor_gui",
+    "mouth_track_gui",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

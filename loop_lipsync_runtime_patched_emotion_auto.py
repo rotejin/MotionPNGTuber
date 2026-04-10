@@ -1622,7 +1622,11 @@ def parse_args():
     return args
 
 
-if __name__ == "__main__":
+def main():
     print(f"[info] runtime: {__VERSION__} file={os.path.abspath(__file__)}")
     args = parse_args()
     run(args)
+
+
+if __name__ == "__main__":
+    main()
