@@ -8,7 +8,7 @@ from pathlib import Path
 import numpy as np
 
 from calibrate_mouth_track import load_bgra
-from mouth_sprite_extractor import write_image_file
+from motionpngtuber.mouth_sprite_extractor import write_image_file
 
 
 class LoadBgraTests(unittest.TestCase):

@@ -7,7 +7,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
-from lipsync_core import load_mouth_sprites
+from motionpngtuber.lipsync_core import load_mouth_sprites
 
 
 class LoadMouthSpritesRegressionTests(unittest.TestCase):

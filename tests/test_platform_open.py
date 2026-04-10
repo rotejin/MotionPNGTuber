@@ -4,7 +4,7 @@ from __future__ import annotations
 import unittest
 from unittest.mock import patch
 
-import platform_open
+import motionpngtuber.platform_open as platform_open
 
 
 class OpenPathWithDefaultAppTests(unittest.TestCase):

@@ -33,7 +33,7 @@ def list_input_devices() -> list[dict]:
     """
     try:
         import sounddevice as sd  # type: ignore
-        from audio_linux import augment_devices_for_linux
+        from motionpngtuber.audio_linux import augment_devices_for_linux
 
         devices: list[dict] = []
         for i, d in enumerate(sd.query_devices()):

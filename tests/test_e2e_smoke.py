@@ -5,7 +5,7 @@ from importlib import import_module
 from pathlib import Path
 
 from convert_npz_to_json import convert_npz_to_json
-from workflow_validation import build_workflow_paths
+from motionpngtuber.workflow_validation import build_workflow_paths
 
 try:
     VideoSetManager = import_module("multi_video_live_gui").VideoSetManager

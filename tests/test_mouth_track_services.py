@@ -166,7 +166,7 @@ class ListInputDevicesTests(unittest.TestCase):
             {"name": "Speaker", "max_input_channels": 0, "default_samplerate": 48000},
         ]
         with mock.patch.dict(sys.modules, {"sounddevice": fake_sd}):
-            with mock.patch("audio_linux.augment_devices_for_linux", side_effect=lambda items, _sd: items):
+            with mock.patch("motionpngtuber.audio_linux.augment_devices_for_linux", side_effect=lambda items, _sd: items):
                 items = list_input_devices()
         self.assertEqual(len(items), 1)
         self.assertEqual(items[0]["spec"], "sd:0")

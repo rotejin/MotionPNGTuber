@@ -31,8 +31,8 @@ from typing import Dict, List, Optional, Tuple
 import cv2
 import numpy as np
 
-from image_io import write_image_file
-from python_exec import resolve_python_subprocess_executable
+from motionpngtuber.image_io import write_image_file
+from motionpngtuber.python_exec import resolve_python_subprocess_executable
 
 
 @dataclass

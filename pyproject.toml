@@ -47,3 +47,12 @@ mmcv-full = [
 
 [tool.uv.extra-build-dependencies]
 chumpy = ["wheel", "pip", "setuptools"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.3",
+]

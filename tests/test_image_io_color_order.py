@@ -8,8 +8,8 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from image_io import read_image_bgra, write_image_file
-from lipsync_core import load_rgba
+from motionpngtuber.image_io import read_image_bgra, write_image_file
+from motionpngtuber.lipsync_core import load_rgba
 
 
 class ImageIoColorOrderTests(unittest.TestCase):

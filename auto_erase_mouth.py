@@ -30,7 +30,7 @@ from typing import List, Optional, Tuple
 import cv2
 import numpy as np
 
-from python_exec import resolve_python_subprocess_executable
+from motionpngtuber.python_exec import resolve_python_subprocess_executable
 
 
 # ----------------------------

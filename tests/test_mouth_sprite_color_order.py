@@ -5,7 +5,7 @@ import unittest
 
 import numpy as np
 
-from mouth_sprite_extractor import extract_mouth_sprite
+from motionpngtuber.mouth_sprite_extractor import extract_mouth_sprite
 from mouth_sprite_extractor_gui import extract_sprite_with_crop
 
 

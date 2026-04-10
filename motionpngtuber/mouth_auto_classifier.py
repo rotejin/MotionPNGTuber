@@ -20,7 +20,7 @@ from typing import Dict, List, TYPE_CHECKING
 import numpy as np
 
 if TYPE_CHECKING:
-    from mouth_sprite_extractor import MouthFrameInfo
+    from motionpngtuber.mouth_sprite_extractor import MouthFrameInfo
 
 
 class MouthAutoClassifier:

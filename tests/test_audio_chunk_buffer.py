@@ -2,7 +2,7 @@ import unittest
 
 import numpy as np
 
-from lipsync_core import AudioChunkBuffer
+from motionpngtuber.lipsync_core import AudioChunkBuffer
 
 
 class AudioChunkBufferTests(unittest.TestCase):

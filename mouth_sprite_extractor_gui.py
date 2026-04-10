@@ -59,7 +59,7 @@ except Exception:
     _HAS_SOUNDDEVICE = False
 
 # Core extractor module
-from mouth_sprite_extractor import (
+from motionpngtuber.mouth_sprite_extractor import (
     MouthSpriteExtractor,
     MouthFrameInfo,
     get_unique_output_dir,
@@ -72,17 +72,17 @@ from mouth_sprite_extractor import (
 )
 
 # Auto classification modules
-from mouth_feature_analyzer import MouthFeatureAnalyzer, MouthFeatures
-from mouth_auto_classifier import MouthAutoClassifier
-from auto_crop_estimator import AutoCropEstimator
-from lipsync_core import one_pole_beta
+from motionpngtuber.mouth_feature_analyzer import MouthFeatureAnalyzer, MouthFeatures
+from motionpngtuber.mouth_auto_classifier import MouthAutoClassifier
+from motionpngtuber.auto_crop_estimator import AutoCropEstimator
+from motionpngtuber.lipsync_core import one_pole_beta
 from mouth_track_gui.services import list_input_devices
-from audio_linux import (
+from motionpngtuber.audio_linux import (
     apply_audio_resolution_for_current_process,
     cleanup_audio_device_resolution,
     resolve_audio_device_spec,
 )
-from platform_open import open_path_with_default_app
+from motionpngtuber.platform_open import open_path_with_default_app
 
 
 # ---------------------------------------------------------------------------

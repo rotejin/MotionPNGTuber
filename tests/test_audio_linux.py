@@ -5,7 +5,7 @@ import os
 import unittest
 from unittest import mock
 
-import audio_linux
+import motionpngtuber.audio_linux as audio_linux
 
 
 class NormalizeAudioDeviceSpecTests(unittest.TestCase):
@@ -24,18 +24,18 @@ class NormalizeAudioDeviceSpecTests(unittest.TestCase):
 
 class NonLinuxNoOpTests(unittest.TestCase):
     def test_windows_noop(self):
-        with mock.patch("audio_linux.is_linux", return_value=False):
+        with mock.patch("motionpngtuber.audio_linux.is_linux", return_value=False):
             self.assertEqual(audio_linux.list_pulse_input_sources(), [])
             self.assertEqual(audio_linux.augment_devices_for_linux([{"spec": "sd:0"}], object()), [{"spec": "sd:0"}])
 
     def test_macos_noop(self):
-        with mock.patch("audio_linux.is_linux", return_value=False):
+        with mock.patch("motionpngtuber.audio_linux.is_linux", return_value=False):
             resolution = audio_linux.resolve_audio_device_spec("pa:test", mock.Mock(), fallback_index=None)
             self.assertIsNone(resolution["resolved_index"])
             self.assertEqual(resolution["strategy"], "none")
 
     def test_apply_cleanup_noop(self):
-        with mock.patch("audio_linux.is_linux", return_value=False):
+        with mock.patch("motionpngtuber.audio_linux.is_linux", return_value=False):
             state = audio_linux.apply_audio_resolution_for_current_process({"strategy": "pulse_env"})
             self.assertEqual(state, {})
             audio_linux.cleanup_audio_device_resolution({}, state)
@@ -43,12 +43,12 @@ class NonLinuxNoOpTests(unittest.TestCase):
 
 class PactlFallbackTests(unittest.TestCase):
     def test_pactl_missing(self):
-        with mock.patch("audio_linux.has_pactl", return_value=False):
+        with mock.patch("motionpngtuber.audio_linux.has_pactl", return_value=False):
             self.assertEqual(audio_linux.list_pulse_input_sources(), [])
             self.assertIsNone(audio_linux.get_pulse_default_source())
 
     def test_build_like_env_and_restore(self):
-        with mock.patch("audio_linux.is_linux", return_value=True):
+        with mock.patch("motionpngtuber.audio_linux.is_linux", return_value=True):
             old = os.environ.get("PULSE_SOURCE")
             try:
                 resolution = {
@@ -86,8 +86,8 @@ class LinuxResolutionTests(unittest.TestCase):
             {"name": "pulse", "max_input_channels": 2, "default_samplerate": 48000},
         ])
         with (
-            mock.patch("audio_linux.is_linux", return_value=True),
-            mock.patch("audio_linux.has_pactl", return_value=True),
+            mock.patch("motionpngtuber.audio_linux.is_linux", return_value=True),
+            mock.patch("motionpngtuber.audio_linux.has_pactl", return_value=True),
         ):
             resolution = audio_linux.resolve_audio_device_spec(
                 "pa:alsa_input.test",
@@ -106,8 +106,8 @@ class LinuxResolutionTests(unittest.TestCase):
             {"name": "pulse", "max_input_channels": 2, "default_samplerate": 48000},
         ])
         with (
-            mock.patch("audio_linux.is_linux", return_value=True),
-            mock.patch("audio_linux.has_pactl", return_value=True),
+            mock.patch("motionpngtuber.audio_linux.is_linux", return_value=True),
+            mock.patch("motionpngtuber.audio_linux.has_pactl", return_value=True),
         ):
             resolution = audio_linux.resolve_audio_device_spec(
                 "pa:alsa_input.test",
@@ -127,8 +127,8 @@ class LinuxResolutionTests(unittest.TestCase):
             {"name": "pulse", "max_input_channels": 2, "default_samplerate": 48000},
         ])
         with (
-            mock.patch("audio_linux.is_linux", return_value=True),
-            mock.patch("audio_linux.has_pactl", return_value=True),
+            mock.patch("motionpngtuber.audio_linux.is_linux", return_value=True),
+            mock.patch("motionpngtuber.audio_linux.has_pactl", return_value=True),
         ):
             resolution = audio_linux.resolve_audio_device_spec(
                 "pa:alsa_input.test",
@@ -145,8 +145,8 @@ class LinuxResolutionTests(unittest.TestCase):
     def test_augment_devices_for_linux_adds_pulse_sources(self):
         base = [{"spec": "sd:0", "index": 0, "display": "0: Mic"}]
         with (
-            mock.patch("audio_linux.is_linux", return_value=True),
-            mock.patch("audio_linux.list_pulse_input_sources", return_value=["alsa_input.test"]),
+            mock.patch("motionpngtuber.audio_linux.is_linux", return_value=True),
+            mock.patch("motionpngtuber.audio_linux.list_pulse_input_sources", return_value=["alsa_input.test"]),
         ):
             devices = audio_linux.augment_devices_for_linux(base, object())
         self.assertEqual(len(devices), 2)

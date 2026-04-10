@@ -15,7 +15,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 
-from python_exec import resolve_python_subprocess_executable
+from motionpngtuber.python_exec import resolve_python_subprocess_executable
 
 
 # ---------------------------------------------------------------------------

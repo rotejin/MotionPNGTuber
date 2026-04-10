@@ -2,7 +2,7 @@ import unittest
 
 import numpy as np
 
-from mouth_color_adjust import (
+from motionpngtuber.mouth_color_adjust import (
     MouthColorAdjust,
     alpha_bbox_from_mask,
     apply_basic_color_adjust_3ch,

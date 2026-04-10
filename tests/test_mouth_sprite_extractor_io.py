@@ -7,7 +7,7 @@ from pathlib import Path
 
 import numpy as np
 
-from mouth_sprite_extractor import write_image_file
+from motionpngtuber.mouth_sprite_extractor import write_image_file
 
 
 class WriteImageFileTests(unittest.TestCase):

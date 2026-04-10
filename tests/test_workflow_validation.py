@@ -2,7 +2,7 @@ import os
 import tempfile
 import unittest
 
-from workflow_validation import (
+from motionpngtuber.workflow_validation import (
     build_workflow_paths,
     format_missing_path_message,
     format_missing_paths_message,

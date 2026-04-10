@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
-from lipsync_core import resolve_preferred_track_path
+from motionpngtuber.lipsync_core import resolve_preferred_track_path
 
 
 @dataclass(frozen=True)

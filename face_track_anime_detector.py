@@ -42,7 +42,7 @@ from typing import Any, Optional, Tuple
 import cv2
 import numpy as np
 
-from image_io import write_image_file
+from motionpngtuber.image_io import write_image_file
 
 # anime-face-detector
 try:

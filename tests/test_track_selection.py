@@ -2,7 +2,7 @@ import os
 import tempfile
 import unittest
 
-from lipsync_core import resolve_preferred_track_path
+from motionpngtuber.lipsync_core import resolve_preferred_track_path
 
 
 class ResolvePreferredTrackPathTests(unittest.TestCase):

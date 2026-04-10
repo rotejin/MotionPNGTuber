@@ -14,8 +14,8 @@ from typing import Callable
 import cv2  # type: ignore
 import numpy as np  # type: ignore
 
-from image_io import read_image_bgra
-from mouth_color_adjust import (
+from motionpngtuber.image_io import read_image_bgra
+from motionpngtuber.mouth_color_adjust import (
     MouthColorAdjust,
     apply_inspect_boost_3ch,
     apply_mouth_color_adjust_4ch,

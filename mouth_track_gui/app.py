@@ -31,12 +31,12 @@ import subprocess
 import time
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
-from platform_open import (
+from motionpngtuber.platform_open import (
     open_path_with_default_app,
     prefer_native_video_preview,
 )
 
-from workflow_validation import (
+from motionpngtuber.workflow_validation import (
     WorkflowPaths,
     build_workflow_paths,
     format_missing_path_message,
@@ -84,7 +84,7 @@ from .live_ipc import (
     cleanup_live_ipc_session,
     create_live_ipc_session,
 )
-from mouth_color_adjust import (
+from motionpngtuber.mouth_color_adjust import (
     MouthColorAdjust,
     clamp_mouth_color_adjust,
 )

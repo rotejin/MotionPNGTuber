@@ -48,7 +48,7 @@ from typing import Optional, Tuple
 import cv2
 import numpy as np
 
-from image_io import write_image_file
+from motionpngtuber.image_io import write_image_file
 
 
 def ensure_even_ge2(n: int) -> int:

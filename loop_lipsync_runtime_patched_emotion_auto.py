@@ -34,7 +34,7 @@ from collections import deque
 
 import cv2
 import numpy as np
-from mouth_color_adjust import (
+from motionpngtuber.mouth_color_adjust import (
     MouthColorAdjust,
     apply_inspect_boost_3ch,
     apply_mouth_color_adjust_4ch,
@@ -46,14 +46,14 @@ from mouth_color_adjust import (
 
 # (optional) lightweight audio-only emotion analyzer (numpy only)
 try:
-    from realtime_emotion_audio import RealtimeEmotionAnalyzer  # type: ignore
+    from motionpngtuber.realtime_emotion_audio import RealtimeEmotionAnalyzer  # type: ignore
     HAS_EMOTION_AUDIO = True
 except Exception:
     RealtimeEmotionAnalyzer = None  # type: ignore
     HAS_EMOTION_AUDIO = False
 
 import sounddevice as sd
-from audio_linux import (
+from motionpngtuber.audio_linux import (
     cleanup_audio_device_resolution,
     normalize_audio_device_spec,
     resolve_audio_device_spec,
@@ -61,7 +61,7 @@ from audio_linux import (
 )
 
 # ========= Import from shared core module =========
-from lipsync_core import (
+from motionpngtuber.lipsync_core import (
     AudioChunkBuffer,
     # Utility functions
     one_pole_beta,
