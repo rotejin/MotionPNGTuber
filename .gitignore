@@ -70,6 +70,7 @@ instance/
 
 # Sphinx documentation
 docs/_build/
+docs/
 
 # PyBuilder
 .pybuilder/
@@ -208,3 +209,21 @@ __marimo__/
 
 # Dependencies (for Mac)
 deps/
+
+# Local app state
+.mouth_track_last_session.json
+
+# Archive (retired / unused files kept locally)
+_archive/
+
+# Development tool configs / prompts
+.claude/
+.codex_plan_review_prompt.txt
+.codex_review_prompt.txt
+
+# Development memos (not part of the product)
+refactoring.md
+review_mouth_track_gui.md
+
+# Legacy requirements (managed by pyproject.toml + uv.lock)
+requirements.txt
