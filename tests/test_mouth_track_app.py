@@ -1,6 +1,8 @@
 """Focused regression tests for mouth_track_gui.app helper methods."""
 from __future__ import annotations
 
+import os
+import tempfile
 import unittest
 from types import SimpleNamespace
 from unittest import mock
@@ -238,6 +240,34 @@ class AppHelperRegressionTests(unittest.TestCase):
         fake._progress_step.assert_called_with(1, "ライブ異常終了")
         fake._show_error.assert_called_once()
         self.assertIn("rc=42", fake._show_error.call_args.args[1])
+
+    def test_export_browser_assets_logs_json_only_when_ffmpeg_missing(self):
+        with tempfile.TemporaryDirectory() as td:
+            mouthless = os.path.join(td, "loop_mouthless.mp4")
+            calib = os.path.join(td, "mouth_track_calibrated.npz")
+            with open(mouthless, "wb") as f:
+                f.write(b"video")
+            import numpy as np
+            np.savez_compressed(calib, fps=np.float32(30.0))
+
+            fake = SimpleNamespace(log=mock.Mock(), _run_cmd_stream=mock.Mock(return_value=0))
+
+            def fake_convert(_npz_path, out_dir):
+                out_path = os.path.join(str(out_dir), "mouth_track.json")
+                with open(out_path, "w", encoding="utf-8") as f:
+                    f.write("{}")
+                return out_path
+
+            with (
+                mock.patch("mouth_track_gui.app.shutil.which", return_value=None),
+                mock.patch("convert_npz_to_json.convert_npz_to_json", side_effect=fake_convert),
+            ):
+                App._export_browser_assets(fake, mouthless, calib)
+
+        joined = "\n".join(call.args[0] for call in fake.log.call_args_list)
+        self.assertIn("mouth_track.json", joined)
+        self.assertIn("ffmpegが見つからないためH.264変換をスキップします", joined)
+        self.assertIn("利用可能ファイル", joined)
 
 
 if __name__ == "__main__":

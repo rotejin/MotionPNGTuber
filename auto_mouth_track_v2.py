@@ -35,6 +35,54 @@ from motionpngtuber.image_io import write_image_file
 from motionpngtuber.python_exec import resolve_python_subprocess_executable
 
 
+def build_arg_parser() -> argparse.ArgumentParser:
+    ap = argparse.ArgumentParser(description="Auto-retry mouth tracking with quality scoring.")
+    ap.add_argument("--video", required=True, help="input video")
+    ap.add_argument("--out", required=True, help="final output npz")
+    ap.add_argument("--detector", default="face_track_anime_detector.py", help="path to detector script")
+    # base detector args
+    ap.add_argument("--device", default="auto", help="cpu / cuda:N / auto (try cuda then cpu)")
+    ap.add_argument("--quality", default="custom")
+    ap.add_argument("--det-scale", dest="det_scale", type=float, default=1.0)
+    ap.add_argument("--stride", type=int, default=1)
+    ap.add_argument("--pad", type=float, default=2.1)
+    ap.add_argument("--sprite-aspect", type=float, default=1.0)
+    ap.add_argument("--quad-mode", default="hybrid")
+    ap.add_argument("--min-mouth-w-ratio", type=float, default=0.12)
+    ap.add_argument("--min-mouth-w-px", type=float, default=16.0)
+    ap.add_argument("--min-conf", dest="min_conf", type=float, default=0.5)
+    ap.add_argument("--smooth-cutoff", type=float, default=3.0)
+    ap.add_argument("--max-angle-change", type=float, default=15.0)
+    ap.add_argument("--valid-min-ratio", type=float, default=0.05)
+    ap.add_argument("--valid-min-count", type=int, default=5)
+    ap.add_argument("--ref-sprite-w", type=int, default=128)
+    ap.add_argument("--ref-sprite-h", type=int, default=85)
+    # NOTE: auto script uses this as a DEBUG DIRECTORY (not detector's mp4 path)
+    ap.add_argument("--debug", default="")
+
+    # scoring thresholds
+    ap.add_argument("--min-valid-rate", type=float, default=0.70)
+    ap.add_argument("--min-mean-conf", type=float, default=0.50)
+    ap.add_argument("--max-jitter-p95", type=float, default=0.030)
+
+    # candidate generation
+    ap.add_argument("--max-tries", type=int, default=8, help="max candidate runs")
+    ap.add_argument("--early-stop", action="store_true", help="stop early if thresholds pass")
+
+    # segment repair
+    g = ap.add_mutually_exclusive_group()
+    g.add_argument("--segment-repair", action="store_true", help="enable segment repair (default)")
+    g.add_argument("--no-segment-repair", action="store_true", help="disable segment repair")
+    ap.set_defaults(segment_repair=True)
+
+    ap.add_argument("--bad-conf-thr", type=float, default=0.35, help="frames with conf<thr treated as bad for segment repair")
+    ap.add_argument("--bad-max-frac", type=float, default=0.25, help="if bad frames fraction > this, skip segment repair")
+    ap.add_argument("--bad-max-len", type=int, default=45, help="max length (frames) per bad segment to repair")
+    ap.add_argument("--seg-pad", type=int, default=10, help="padding frames around bad segment")
+    ap.add_argument("--max-segments", type=int, default=6, help="max segments to repair")
+    return ap
+
+
 @dataclass
 class Metrics:
     valid_rate: float
@@ -624,50 +672,7 @@ def _build_candidates_adaptive(
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="Auto-retry mouth tracking with quality scoring.")
-    ap.add_argument("--video", required=True, help="input video")
-    ap.add_argument("--out", required=True, help="final output npz")
-    ap.add_argument("--detector", default="face_track_anime_detector.py", help="path to detector script")
-    # base detector args
-    ap.add_argument("--device", default="cuda:0")
-    ap.add_argument("--quality", default="custom")
-    ap.add_argument("--det-scale", dest="det_scale", type=float, default=1.0)
-    ap.add_argument("--stride", type=int, default=1)
-    ap.add_argument("--pad", type=float, default=2.1)
-    ap.add_argument("--sprite-aspect", type=float, default=1.0)
-    ap.add_argument("--quad-mode", default="hybrid")
-    ap.add_argument("--min-mouth-w-ratio", type=float, default=0.12)
-    ap.add_argument("--min-mouth-w-px", type=float, default=16.0)
-    ap.add_argument("--min-conf", dest="min_conf", type=float, default=0.5)
-    ap.add_argument("--smooth-cutoff", type=float, default=3.0)
-    ap.add_argument("--max-angle-change", type=float, default=15.0)
-    ap.add_argument("--valid-min-ratio", type=float, default=0.05)
-    ap.add_argument("--valid-min-count", type=int, default=5)
-    ap.add_argument("--ref-sprite-w", type=int, default=128)
-    ap.add_argument("--ref-sprite-h", type=int, default=85)
-    # NOTE: auto script uses this as a DEBUG DIRECTORY (not detector's mp4 path)
-    ap.add_argument("--debug", default="")
-
-    # scoring thresholds
-    ap.add_argument("--min-valid-rate", type=float, default=0.70)
-    ap.add_argument("--min-mean-conf", type=float, default=0.50)
-    ap.add_argument("--max-jitter-p95", type=float, default=0.030)
-
-    # candidate generation
-    ap.add_argument("--max-tries", type=int, default=8, help="max candidate runs")
-    ap.add_argument("--early-stop", action="store_true", help="stop early if thresholds pass")
-
-    # segment repair
-    g = ap.add_mutually_exclusive_group()
-    g.add_argument("--segment-repair", action="store_true", help="enable segment repair (default)")
-    g.add_argument("--no-segment-repair", action="store_true", help="disable segment repair")
-    ap.set_defaults(segment_repair=True)
-
-    ap.add_argument("--bad-conf-thr", type=float, default=0.35, help="frames with conf<thr treated as bad for segment repair")
-    ap.add_argument("--bad-max-frac", type=float, default=0.25, help="if bad frames fraction > this, skip segment repair")
-    ap.add_argument("--bad-max-len", type=int, default=45, help="max length (frames) per bad segment to repair")
-    ap.add_argument("--seg-pad", type=int, default=10, help="padding frames around bad segment")
-    ap.add_argument("--max-segments", type=int, default=6, help="max segments to repair")
+    ap = build_arg_parser()
     args = ap.parse_args()
 
     candidate_reports: List[Dict[str, object]] = []

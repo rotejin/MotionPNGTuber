@@ -79,6 +79,7 @@ def build_track_cmd(
         os.path.join(base_dir, "auto_mouth_track_v2.py"),
         "--video", video,
         "--out", track_npz,
+        "--device", "auto",
         "--pad", f"{pad:.2f}",
         "--stride", "1",
         "--det-scale", "1.0",
@@ -292,7 +293,11 @@ def plan_track_and_calib(
                 cwd=base_dir,
                 expected_outputs=(track_npz,),
                 allow_soft_stop=True,
-                error_msg="解析に失敗しました",
+                error_msg="解析に失敗しました。ログを確認してください。GPU環境では自動CPUフォールバックも試行されます",
+                pre_log=(
+                    "初回解析は時間がかかることがあります。"
+                    "GPU非互換環境では自動でCPUに切り替わり、さらに遅くなる場合があります。"
+                ),
             ),
             ActionStep(
                 cmd=build_calib_cmd(

@@ -9,7 +9,7 @@ from unittest import mock
 
 import numpy as np
 
-from auto_mouth_track_v2 import Metrics, _segment_repair
+from auto_mouth_track_v2 import Metrics, _segment_repair, build_arg_parser
 
 
 class SegmentRepairTests(unittest.TestCase):
@@ -70,6 +70,13 @@ class SegmentRepairTests(unittest.TestCase):
                 self.assertIn("quad", npz.files)
                 self.assertEqual(npz["quad"].shape, (4, 4, 2))
             os.unlink(repaired)
+
+
+class ArgParserTests(unittest.TestCase):
+    def test_device_defaults_to_auto(self):
+        parser = build_arg_parser()
+        args = parser.parse_args(["--video", "loop.mp4", "--out", "out.npz"])
+        self.assertEqual(args.device, "auto")
 
 
 if __name__ == "__main__":

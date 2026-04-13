@@ -1238,20 +1238,29 @@ class App(tk.Tk):
             fps = None
 
         out_dir = os.path.dirname(os.path.abspath(mouthless_mp4))
+        json_path = os.path.join(out_dir, "mouth_track.json")
 
         try:
             from convert_npz_to_json import convert_npz_to_json  # type: ignore
             convert_npz_to_json(Path(calib_npz), Path(out_dir))
-            self.log(f"[info] ブラウザ用JSON出力: {os.path.join(out_dir, 'mouth_track.json')}")
+            self.log(f"[info] ブラウザ用JSON出力: {json_path}")
         except Exception as e:
             self.log(f"[warn] ブラウザ用JSON出力に失敗しました: {e}")
 
         if not fps:
+            if os.path.isfile(json_path):
+                self.log(f"[info] ブラウザ用出力の利用可能ファイル: {json_path}")
             return
 
         ffmpeg = shutil.which("ffmpeg")
         if not ffmpeg:
-            self.log("[warn] ブラウザ用出力: ffmpegが見つからないためH.264変換をスキップします。")
+            self.log(
+                "[warn] ブラウザ用出力: ffmpegが見つからないためH.264変換をスキップします。"
+                " mouth_track.json は出力済みです。"
+                " MotionPNGTuber_Player などでは H.264 版MP4があると扱いやすくなります。"
+            )
+            if os.path.isfile(json_path):
+                self.log(f"[info] ブラウザ用出力の利用可能ファイル: {json_path}")
             return
 
         h264_mp4 = os.path.splitext(mouthless_mp4)[0] + "_h264.mp4"
@@ -1279,6 +1288,8 @@ class App(tk.Tk):
             self.log(f"[warn] ブラウザ用H.264変換に失敗しました (rc={rc})")
         else:
             self.log(f"[info] ブラウザ用H.264出力: {h264_mp4}")
+            if os.path.isfile(json_path):
+                self.log(f"[info] ブラウザ用出力の利用可能ファイル: {json_path}, {h264_mp4}")
 
     # ----- workflow buttons -----
     def _start_worker(self, target) -> None:

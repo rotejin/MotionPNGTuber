@@ -8,10 +8,10 @@ calibrate_mouth_track.py
 
 使い方:
     python calibrate_mouth_track.py \
-        --video "assets/assets10/loop.mp4" \
-        --track "assets/assets10/mouth_track.npz" \
-        --sprite "assets/assets10/mouth/open.png" \
-        --out "assets/assets10/mouth_track_calibrated.npz"
+        --video "assets/asmr_tomari/asmr_loop.mp4" \
+        --track "assets/asmr_tomari/mouth_track.npz" \
+        --sprite "assets/asmr_tomari/mouth/open.png" \
+        --out "assets/asmr_tomari/mouth_track_calibrated.npz"
 
 操作:
     - マウス左ドラッグ: 移動

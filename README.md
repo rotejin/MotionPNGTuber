@@ -72,6 +72,8 @@ uv run python mouth_track_gui.py
 #    → (1) Analyze → Calibrate → (2) Generate mouthless video → (3) Live run
 ```
 
+> Note: some older articles still refer to `assets01` / `assets03`. The current sample set on `main` is `assets/asmr_tomari/`.
+
 ---
 
 ## Installation
@@ -419,6 +421,17 @@ After completing **(2) Generate mouthless video**, the following files are expor
 
 Use these when passing mouth track data to a browser implementation.
 
+- `mouth_track.json` is the main track export
+- `*_mouthless_h264.mp4` is recommended for browser / player use when `ffmpeg` is available
+- If `ffmpeg` is missing, the GUI still exports `mouth_track.json` and logs that H.264 export was skipped
+
+For **MotionPNGTuber_Player** and other browser implementations that use **AudioWorklet**, opening files via `file://` may block mic / worklet loading. In that case, serve the folder locally:
+
+```bash
+python -m http.server 8000
+# then open http://localhost:8000
+```
+
 </details>
 
 <details>
@@ -462,24 +475,27 @@ MotionPNGTuber/
 │   ├── preview.py                                  #   Lightweight preview
 │   └── live_ipc.py                                 #   Live runtime IPC
 ├── mouth_sprite_extractor_gui.py                   # Mouth PNG creation GUI
-├── mouth_sprite_extractor.py                       # Mouth PNG extraction logic
+├── mouth_sprite_extractor.py                       # CLI wrapper for mouth sprite extraction
 ├── auto_mouth_track_v2.py                          # Mouth position tracking
 ├── calibrate_mouth_track.py                        # Calibration
 ├── auto_erase_mouth.py                             # Mouthless video generation
 ├── erase_mouth_offline.py                          # Mouth erase core processing
 ├── loop_lipsync_runtime_patched_emotion_auto.py    # Live runtime
-├── python_exec.py                                  # Python executable resolver
-├── audio_linux.py                                  # Linux audio helper (PulseAudio/PipeWire)
-├── mouth_color_adjust.py                           # Mouth PNG color correction logic
-├── lipsync_core.py                                 # Shared module
-├── image_io.py                                     # Image I/O (Unicode path support)
-├── platform_open.py                                # Platform-specific open handling
-├── auto_crop_estimator.py                          # Auto crop estimation
 ├── face_track_anime_detector.py                    # Anime face detection
-├── mouth_auto_classifier.py                        # Mouth shape auto classification
-├── mouth_feature_analyzer.py                       # Mouth feature analysis
-├── realtime_emotion_audio.py                       # Real-time emotion audio analysis
-├── workflow_validation.py                          # Workflow validation
+├── motionpngtuber/                                 # Shared library package
+│   ├── __init__.py
+│   ├── mouth_sprite_extractor.py                   #   Core mouth sprite extraction logic
+│   ├── python_exec.py                              #   Python executable resolver
+│   ├── audio_linux.py                              #   Linux audio helper (PulseAudio/PipeWire)
+│   ├── mouth_color_adjust.py                       #   Mouth PNG color correction logic
+│   ├── lipsync_core.py                             #   Shared module
+│   ├── image_io.py                                 #   Image I/O (Unicode path support)
+│   ├── platform_open.py                            #   Platform-specific open handling
+│   ├── auto_crop_estimator.py                      #   Auto crop estimation
+│   ├── mouth_auto_classifier.py                    #   Mouth shape auto classification
+│   ├── mouth_feature_analyzer.py                   #   Mouth feature analysis
+│   ├── realtime_emotion_audio.py                   #   Real-time emotion audio analysis
+│   └── workflow_validation.py                      #   Workflow validation
 ├── convert_npz_to_json.py                          # npz → JSON conversion
 ├── tests/                                          # Test suite
 ├── assets/                                         # Sample assets
@@ -515,6 +531,18 @@ uv sync
 ```bash
 uv run python -c "import torch; print(torch.cuda.is_available())"
 ```
+
+### Analysis stops on RTX 50-series / newer GPUs
+
+- Root cause: the current Torch / CUDA build may not fully match your GPU architecture
+- Prevention: the GUI now starts analysis with `--device auto`, which tries CUDA first and then CPU fallback
+- If analysis still fails, rerun from CLI with `--device cpu` and check the log for CUDA compatibility messages
+
+### Analysis looks frozen
+
+- Initial analysis can take time, especially on long videos
+- If GPU fallback switches to CPU, processing becomes much slower but is still expected
+- Check the progress area and log before assuming the app has hung
 
 </details>
 

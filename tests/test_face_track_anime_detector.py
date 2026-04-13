@@ -3,8 +3,12 @@ import unittest
 import numpy as np
 
 from face_track_anime_detector import (
+    build_device_try_order,
+    create_detector_with_fallback,
+    is_cuda_runtime_error,
     mouth_quad_auto,
     mouth_quad_from_landmarks,
+    run_detector_with_runtime_fallback,
     select_target_prediction,
 )
 
@@ -130,6 +134,60 @@ class MouthQuadSizingTests(unittest.TestCase):
         self.assertIsNotNone(best)
         assert best is not None
         np.testing.assert_array_equal(best["bbox"], preds[1]["bbox"])
+
+
+class DeviceFallbackTests(unittest.TestCase):
+    def test_build_device_try_order_auto_prefers_cuda_then_cpu(self):
+        self.assertEqual(build_device_try_order("auto"), ["cuda:0", "cpu"])
+
+    def test_build_device_try_order_cuda_adds_cpu_fallback(self):
+        self.assertEqual(build_device_try_order("cuda:1"), ["cuda:1", "cpu"])
+
+    def test_is_cuda_runtime_error_detects_known_message(self):
+        self.assertTrue(is_cuda_runtime_error(RuntimeError("no kernel image is available for execution on the device")))
+        self.assertFalse(is_cuda_runtime_error(RuntimeError("some unrelated failure")))
+
+    def test_create_detector_with_fallback_uses_cpu_after_cuda_init_failure(self):
+        calls = []
+
+        def fake_create(model, device):
+            calls.append((model, device))
+            if device.startswith("cuda"):
+                raise RuntimeError("sm_120 is not compatible")
+            return {"device": device}
+
+        with unittest.mock.patch("face_track_anime_detector.create_detector", side_effect=fake_create):
+            detector, used_device = create_detector_with_fallback("yolov3", "auto")
+
+        self.assertEqual(detector["device"], "cpu")
+        self.assertEqual(used_device, "cpu")
+        self.assertEqual(calls, [("yolov3", "cuda:0"), ("yolov3", "cpu")])
+
+    def test_run_detector_with_runtime_fallback_retries_current_frame_on_cpu(self):
+        frame = np.zeros((8, 8, 3), dtype=np.uint8)
+
+        class FailingCudaDetector:
+            def __call__(self, _frame):
+                raise RuntimeError("CUDA error: no kernel image is available")
+
+        class CpuDetector:
+            def __call__(self, _frame):
+                return [{"bbox": np.asarray([0, 0, 1, 1, 0.9], dtype=np.float32), "keypoints": np.zeros((28, 3), dtype=np.float32)}]
+
+        with unittest.mock.patch(
+            "face_track_anime_detector.create_detector_with_fallback",
+            return_value=(CpuDetector(), "cpu"),
+        ):
+            preds, detector, used_device = run_detector_with_runtime_fallback(
+                FailingCudaDetector(),
+                frame,
+                model="yolov3",
+                current_device="cuda:0",
+            )
+
+        self.assertEqual(used_device, "cpu")
+        self.assertEqual(len(preds), 1)
+        self.assertIsInstance(detector, CpuDetector)
 
 
 if __name__ == "__main__":

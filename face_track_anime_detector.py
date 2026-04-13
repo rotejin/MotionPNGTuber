@@ -57,6 +57,64 @@ except ImportError:
 
 # ランドマークのインデックス定義
 MOUTH_OUTLINE = [24, 25, 26, 27]  # 口の4点
+CUDA_RUNTIME_ERROR_MARKERS = (
+    "sm_",
+    "not compatible",
+    "cuda error",
+    "no kernel image is available",
+    "torch not compiled with cuda enabled",
+)
+
+
+def build_device_try_order(device: str) -> list[str]:
+    if device == "auto":
+        return ["cuda:0", "cpu"]
+    order = [device]
+    if device.startswith("cuda"):
+        order.append("cpu")
+    return order
+
+
+def is_cuda_runtime_error(exc: BaseException | str) -> bool:
+    text = str(exc).lower()
+    return any(marker in text for marker in CUDA_RUNTIME_ERROR_MARKERS)
+
+
+def create_detector_with_fallback(model: str, requested_device: str):
+    detector = None
+    last_err = None
+    used_device = requested_device
+    for dev in build_device_try_order(requested_device):
+        try:
+            detector = create_detector(model, device=dev)
+            used_device = dev
+            if dev != requested_device:
+                print(f"[info] detector fallback: using device={dev}")
+            break
+        except Exception as e:
+            last_err = e
+            print(f"[warn] detector init failed on {dev}: {e}")
+    if detector is None:
+        raise RuntimeError(f"Failed to create detector. Last error: {last_err}")
+    return detector, used_device
+
+
+def run_detector_with_runtime_fallback(
+    detector,
+    frame: np.ndarray,
+    *,
+    model: str,
+    current_device: str,
+):
+    try:
+        return detector(frame), detector, current_device
+    except Exception as e:
+        if current_device.startswith("cuda") and is_cuda_runtime_error(e):
+            print(f"[warn] detector runtime failed on {current_device}: {e}")
+            print("[info] detector runtime fallback: retrying current frame on cpu (slower)")
+            cpu_detector, cpu_device = create_detector_with_fallback(model, "cpu")
+            return cpu_detector(frame), cpu_detector, cpu_device
+        raise
 
 
 def _bbox_center_area(bbox: np.ndarray) -> tuple[np.ndarray, float, float]:
@@ -817,25 +875,7 @@ def main() -> int:
     # device fallback:
     # - --device auto: try cuda:0 then cpu
     # - --device cuda:*: if init fails, fallback cpu
-    detector = None
-    last_err = None
-    if args.device == "auto":
-        device_try = ["cuda:0", "cpu"]
-    else:
-        device_try = [args.device]
-        if args.device.startswith("cuda"):
-            device_try.append("cpu")
-    for dev in device_try:
-        try:
-            detector = create_detector(args.model, device=dev)
-            if dev != args.device:
-                print(f"[info] detector fallback: using device={dev}")
-            break
-        except Exception as e:
-            last_err = e
-            print(f"[warn] detector init failed on {dev}: {e}")
-    if detector is None:
-        raise RuntimeError(f"Failed to create detector. Last error: {last_err}")
+    detector, current_device = create_detector_with_fallback(args.model, args.device)
     cap = cv2.VideoCapture(args.video)
     if not cap.isOpened():
         print(f"[error] failed to open video: {args.video}")
@@ -925,7 +965,12 @@ def main() -> int:
             if det_scale != 1.0:
                 det_frame = cv2.resize(frame, (det_w, det_h), interpolation=det_interp)
 
-            preds = detector(det_frame)
+            preds, detector, current_device = run_detector_with_runtime_fallback(
+                detector,
+                det_frame,
+                model=args.model,
+                current_device=current_device,
+            )
 
             if det_scale != 1.0 and len(preds) > 0:
                 scaled_preds = []

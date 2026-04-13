@@ -62,6 +62,8 @@ class BuildTrackCmdTests(unittest.TestCase):
         self.assertIn("vid.mp4", cmd)
         self.assertIn("--out", cmd)
         self.assertIn("out.npz", cmd)
+        self.assertIn("--device", cmd)
+        self.assertIn("auto", cmd)
         self.assertIn("--pad", cmd)
         self.assertIn("2.00", cmd)
         self.assertIn("--early-stop", cmd)
