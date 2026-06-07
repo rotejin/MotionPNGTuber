@@ -1954,6 +1954,7 @@ class MouthSpriteExtractorApp(tk.Tk if not _HAS_TK_DND else TkinterDnD.Tk):
             return
         
         self.is_analyzing = True
+        self.analyze_error = None
         self._refresh_workflow_state()
         self._start_busy_state("解析中", "口位置を解析しています。しばらくお待ちください")
         self.analyze_btn.configure(state=tk.DISABLED)
@@ -1966,17 +1967,51 @@ class MouthSpriteExtractorApp(tk.Tk if not _HAS_TK_DND else TkinterDnD.Tk):
         self._clear_candidates()
         self._clear_preview("empty")
         
+        # MacOS AVFoundation deadlock workaround:
+        # cv2.VideoCapture cannot be opened from a background thread if the main thread holds it open
+        self._close_player_capture()
+        if self._cached_cap:
+            self._cached_cap.release()
+            self._cached_cap = None
+        
         thread = threading.Thread(target=self._analyze_worker, daemon=True)
         thread.start()
+        self.after(100, self._poll_analyze_done)
+        
+    def _poll_analyze_done(self):
+        if self.is_analyzing:
+            self.after(100, self._poll_analyze_done)
+            return
+            
+        if self.analyze_error:
+            self._finish_busy_state("解析エラー")
+        else:
+            self._finish_busy_state("解析完了")
+            self._enable_manual_pick_controls(True)
+            self.auto_fill_btn.configure(state=tk.NORMAL)
+            self._show_player_frame(self.player_current_frame_idx)
+            
+        self.analyze_btn.configure(state=tk.NORMAL)
+        self._refresh_workflow_state()
     
     def _analyze_worker(self):
         """解析ワーカースレッド"""
+        def trace(msg):
+            with open("/tmp/debug.txt", "a") as f:
+                f.write(msg + "\n")
+        
         try:
+            import time
+            time.sleep(0.2) # Wait for AVFoundation to completely release the previous capture asynchronously
+            trace("1. starting worker")
             self.log("解析を開始...")
             
+            trace("2. creating extractor")
             self.extractor = MouthSpriteExtractor(self.video_path)
+            trace("3. running analyze")
             self.extractor.analyze(callback=self.log)
-             
+            
+            trace("4. analyze done")
             valid_frames = [mf for mf in self.extractor.mouth_frames if mf.valid]
             self.valid_frames = valid_frames
             self._mouth_frame_by_idx = {
@@ -1999,20 +2034,18 @@ class MouthSpriteExtractorApp(tk.Tk if not _HAS_TK_DND else TkinterDnD.Tk):
             
             self.log("解析完了。プレイヤーで候補フレームを手動追加してください。")
             self.log("必要なら『候補を自動選出』で従来の自動抽出も使えます。")
-            self.after(0, lambda: self._finish_busy_state("解析完了"))
-            self.after(0, lambda: self._enable_manual_pick_controls(True))
-            self.after(0, lambda: self.auto_fill_btn.configure(state=tk.NORMAL))
-            self.after(0, lambda: self._show_player_frame(self.player_current_frame_idx))
+            trace("5. queuing UI updates")
               
         except Exception as e:
+            trace(f"ERROR: {e}")
             self.log(f"エラー: {e}")
-            self.after(0, lambda: self._finish_busy_state("解析エラー"))
+            self.analyze_error = str(e)
             traceback.print_exc()
         
         finally:
+            trace("7. finally block")
             self.is_analyzing = False
-            self.after(0, lambda: self.analyze_btn.configure(state=tk.NORMAL))
-            self.after(0, self._refresh_workflow_state)
+            trace("8. worker exit")
     
     def _get_video_capture(self) -> cv2.VideoCapture:
         """キャッシュされたVideoCaptureを取得"""

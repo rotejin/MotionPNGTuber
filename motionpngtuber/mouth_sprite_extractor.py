@@ -538,9 +538,21 @@ class MouthSpriteExtractor:
         if callback:
             callback("Running face detector...")
         
-        result = subprocess.run(cmd, capture_output=True, text=True)
-        if result.returncode != 0:
-            raise RuntimeError(f"Face detector failed: {result.stderr}")
+        process = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+            universal_newlines=True,
+        )
+        for line in process.stdout:
+            line = line.strip()
+            if line and callback:
+                callback(line)
+        process.wait()
+        if process.returncode != 0:
+            raise RuntimeError(f"Face detector failed with exit code {process.returncode}")
         
         return track_out
     

@@ -119,6 +119,10 @@ MAX_LOG_LINES = 200  # ログ表示の上限行数
 class App(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
+        import queue
+        self.ui_queue = queue.Queue()
+        self._poll_ui_queue()
+        
         self.title("Mouth Track One-Click (HQ)")
         self.geometry("1180x860")
 
@@ -463,14 +467,15 @@ class App(tk.Tk):
             self._live_color_control_job = None
 
     def _set_auto_color_button_enabled(self, enabled: bool, *, text: str | None = None) -> None:
-        def _apply() -> None:
-            try:
-                self.btn_auto_color.configure(state=("normal" if enabled else "disabled"))
-                if text is not None:
-                    self.btn_auto_color.configure(text=text)
-            except Exception:
-                pass
-        self.after(0, _apply)
+        self.ui_queue.put(lambda: self._apply_button_state(enabled, text))
+
+    def _apply_button_state(self, enabled: bool, text: str | None = None) -> None:
+        try:
+            self.btn_auto_color.configure(state=("normal" if enabled else "disabled"))
+            if text is not None:
+                self.btn_auto_color.configure(text=text)
+        except Exception:
+            pass
 
     def _clear_live_color_control(self) -> None:
         try:
@@ -601,8 +606,30 @@ class App(tk.Tk):
         self._auto_color_poll_job = self.after(120, self._poll_auto_color_result)
 
     # ----- logging (thread-safe) -----
-    def log(self, s: str) -> None:
-        self.log_q.put(s)
+    def _poll_ui_queue(self):
+        try:
+            while True:
+                task = self.ui_queue.get_nowait()
+                task()
+        except queue.Empty:
+            pass
+        self.after(50, self._poll_ui_queue)
+
+    def log(self, msg: str) -> None:
+        self.ui_queue.put(lambda: self._insert_log(msg))
+
+    def _insert_log(self, s: str) -> None:
+        # Remove null bytes from log text
+        s = s.replace("\x00", "")
+        self.txt.configure(state="normal")
+        self.txt.insert("end", s + "\n")
+        # 上限チェック
+        line_count = int(self.txt.index("end-1c").split(".")[0])
+        if line_count > MAX_LOG_LINES:
+            excess = line_count - MAX_LOG_LINES
+            self.txt.delete("1.0", f"{excess + 1}.0")
+        self.txt.see("end")
+        self.txt.configure(state="disabled")
 
     def _save_session(self, payload: dict) -> bool:
         ok = save_session(payload)
@@ -827,7 +854,7 @@ class App(tk.Tk):
             self._save_session({"character": character})
 
     def _post_set_character(self, character: str, *, persist: bool = False) -> None:
-        self.after(0, lambda c=character, p=persist: self._set_character(c, persist=p))
+        self.ui_queue.put(lambda c=character, p=persist: self._set_character(c, persist=p))
 
     def _runtime_supports(self, runtime_py: str, flags: list[str]) -> bool:
         return script_contains(runtime_py, flags)
@@ -864,7 +891,7 @@ class App(tk.Tk):
                 self.soft_requested_at = None
                 self.btn_stop.configure(text=STOP_BTN_TEXT_DEFAULT)
 
-        self.after(0, _apply)
+        self.ui_queue.put(_apply)
 
     def _set_running(self, running: bool) -> None:
         def _apply():
@@ -879,14 +906,14 @@ class App(tk.Tk):
             if not running:
                 self._set_stop_mode("none")
                 self._progress_reset()
-        self.after(0, _apply)
+        self.ui_queue.put(_apply)
 
     def _progress_reset(self) -> None:
         def _apply():
             self.progress.configure(mode="determinate", maximum=1.0)
             self.progress_var.set(0.0)
             self.progress_text_var.set("待機中")
-        self.after(0, _apply)
+        self.ui_queue.put(_apply)
 
     def _progress_begin(self, total_steps: int, text: str) -> None:
         def _apply():
@@ -894,7 +921,7 @@ class App(tk.Tk):
             self.progress.configure(mode="determinate", maximum=self._progress_total)
             self.progress_var.set(0.0)
             self.progress_text_var.set(text)
-        self.after(0, _apply)
+        self.ui_queue.put(_apply)
 
     def _progress_step(self, step: int, text: str) -> None:
         def _apply():
@@ -902,13 +929,13 @@ class App(tk.Tk):
             val = min(max(0, int(step)), int(self._progress_total))
             self.progress_var.set(val)
             self.progress_text_var.set(text)
-        self.after(0, _apply)
+        self.ui_queue.put(_apply)
 
     def _show_error(self, title: str, msg: str) -> None:
-        self.after(0, lambda: messagebox.showerror(title, msg))
+        self.ui_queue.put(lambda: messagebox.showerror(title, msg))
 
     def _show_warn(self, title: str, msg: str) -> None:
-        self.after(0, lambda: messagebox.showwarning(title, msg))
+        self.ui_queue.put(lambda: messagebox.showwarning(title, msg))
 
     def _apply_preview_selection(self, pad: float, coverage: float) -> None:
         pad_v = round(float(pad), 2)
@@ -1503,9 +1530,8 @@ class App(tk.Tk):
                     show_error=self._show_error,
                 )
                 if selection.applied:
-                    self.after(
-                        0,
-                        lambda p=selection.pad, c=selection.coverage: self._apply_preview_selection(p, c),
+                    self.ui_queue.put(
+                        lambda p=selection.pad, c=selection.coverage: self._apply_preview_selection(p, c)
                     )
             except Exception as e:
                 self._show_error("エラー", str(e))
