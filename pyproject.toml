@@ -1,6 +1,37 @@
-[build-system]
-requires = ["setuptools>=60.0.0"]
-build-backend = "setuptools.build_meta"
+# =============================================================================
+# MotionPNGTuber - macOS (Apple Silicon) 用 pyproject.toml
+# =============================================================================
+#
+# インストール手順:
+#   1. cp pyproject.toml pyproject.win.toml && cp pyproject.macos.toml pyproject.toml
+#   2. uv venv .venv && uv sync
+#   3. uv pip install pip setuptools wheel torch==2.0.1 torchvision==0.15.2
+#   4. xtcocotoolsをソースからビルド（PyPI版はビルドエラーになるため先に入れる）:
+#      mkdir -p deps && cd deps
+#      git clone https://github.com/jin-s13/xtcocoapi.git
+#      cd xtcocoapi
+#      ../../.venv/bin/python -m pip install -e .
+#      cd ../..
+#   5. mmcv-fullをソースからビルド（ビルド済みバイナリがないため）:
+#      cd deps
+#      curl -L https://github.com/open-mmlab/mmcv/archive/refs/tags/v1.7.0.tar.gz -o mmcv-1.7.0.tar.gz
+#      tar xzf mmcv-1.7.0.tar.gz
+#      cd mmcv-1.7.0
+#      MMCV_WITH_OPS=1 FORCE_CUDA=0 ../../.venv/bin/python setup.py develop
+#      MMCV_WITH_OPS=1 FORCE_CUDA=0 ../../.venv/bin/python setup.py build_ext --inplace
+#      cd ../..
+#   6. anime-face-detectorをインストール（xtcocotools/mmcvは既にあるのでスキップされる）:
+#      （--no-build-isolation: chumpy等のビルドに仮想環境のpipが必要なため）
+#      uv pip install --no-build-isolation anime-face-detector
+#   7. mmdet/mmposeを正しいバージョンに修正（anime-face-detectorが最新版を入れてしまうため）:
+#      uv pip install mmdet==2.28.0 mmpose==0.29.0
+#   8. .venv/bin/python mouth_track_gui.py
+#
+# 注意:
+#   - deps/ ディレクトリは削除しないこと（editable installのため参照される）
+#   - PyTorchは2.0.1を使用（最新版はmmcv 1.7.0と互換性がない）
+#
+# =============================================================================
 
 [project]
 name = "motionpngtuber"
@@ -9,81 +40,22 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = "==3.10.*"
 dependencies = [
-    "anime-face-detector==0.0.9 ; sys_platform == 'win32' or sys_platform == 'linux'",
-    "mmcv-full==1.7.0 ; sys_platform == 'win32' or sys_platform == 'linux'",
-    "mmdet==2.28.0 ; sys_platform == 'win32' or sys_platform == 'linux'",
-    "mmpose==0.29.0 ; sys_platform == 'win32' or sys_platform == 'linux'",
+    # 基本パッケージ（uv syncでインストール）
     "numpy>=1.24.0,<2.0.0",
     "opencv-python>=4.8.0",
-    "openmim>=0.3.9",
     "pillow>=10.0.0",
-    "pip>=24.0",
     "scipy>=1.10.0",
-    "setuptools>=60.0.0,<70.0.0",
     "sounddevice>=0.4.6",
-    "torch==1.13.1+cu117 ; sys_platform == 'win32' or sys_platform == 'linux'",
-    "torchvision==0.14.1+cu117 ; sys_platform == 'win32' or sys_platform == 'linux'"
+    # 以下は手動インストール（手順2-5参照）:
+    # - pip, setuptools, wheel
+    # - torch==2.0.1, torchvision==0.15.2
+    # - anime-face-detector, mmdet==2.28.0, mmpose==0.29.0
+    # - mmcv-full (ソースビルド)
+    # - xtcocotools (ソースビルド)
 ]
 
 [tool.uv]
 override-dependencies = [
     # headless版を無効化してGUI版のopencv-pythonを使用
     "opencv-python-headless>=4.5.4.58 ; sys_platform == 'never'",
-]
-index-strategy = "first-index"
-
-[[tool.uv.index]]
-name = "pytorch-cu117"
-url = "https://download.pytorch.org/whl/cu117"
-explicit = true
-
-[tool.uv.sources]
-torch = [
-    { index = "pytorch-cu117", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
-]
-torchvision = [
-    { index = "pytorch-cu117", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
-]
-mmcv-full = [
-    { url = "https://download.openmmlab.com/mmcv/dist/cu117/torch1.13.0/mmcv_full-1.7.0-cp310-cp310-manylinux1_x86_64.whl", marker = "sys_platform == 'linux'" },
-    { url = "https://download.openmmlab.com/mmcv/dist/cu117/torch1.13.0/mmcv_full-1.7.0-cp310-cp310-win_amd64.whl", marker = "sys_platform == 'win32'" },
-]
-
-[tool.uv.extra-build-dependencies]
-chumpy = ["wheel", "pip", "setuptools"]
-
-[project.scripts]
-mouth-track-gui = "mouth_track_gui:main"
-mouth-sprite-gui = "mouth_sprite_extractor_gui:main"
-mouth-sprite-extract = "motionpngtuber.mouth_sprite_extractor:main"
-auto-mouth-track = "auto_mouth_track_v2:main"
-auto-erase-mouth = "auto_erase_mouth:main"
-calibrate-mouth-track = "calibrate_mouth_track:main"
-erase-mouth-offline = "erase_mouth_offline:main"
-face-track-detect = "face_track_anime_detector:main"
-convert-npz-to-json = "convert_npz_to_json:main"
-lipsync-runtime = "loop_lipsync_runtime_patched_emotion_auto:main"
-
-[tool.setuptools]
-packages = ["motionpngtuber", "mouth_track_gui"]
-py-modules = [
-    "auto_erase_mouth",
-    "auto_mouth_track_v2",
-    "calibrate_mouth_track",
-    "convert_npz_to_json",
-    "erase_mouth_offline",
-    "face_track_anime_detector",
-    "loop_lipsync_runtime_patched_emotion_auto",
-    "mouth_sprite_extractor",
-    "mouth_sprite_extractor_gui",
-    "mouth_track_gui",
-]
-
-[tool.pytest.ini_options]
-testpaths = ["tests"]
-pythonpath = ["."]
-
-[dependency-groups]
-dev = [
-    "pytest>=9.0.3",
 ]
