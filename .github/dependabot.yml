@@ -9,11 +9,13 @@ updates:
 # Python の依存（uv）の自動更新は使わない。Dependabot は uv.lock を作り直す時に
 # mmcv-full の配布物（download.openmmlab.com）を取りに行けず、毎回失敗するため
 # （private_source_authentication_failure）。代わりに、CI（.github/workflows/ci.yml）が
-# 毎週 tools/audit.py で、直せる脆弱性が無いかを調べる。脆弱性のアラートは今までどおり届く。
+# 毎週 tools/audit.py で、直せる脆弱性と、影響を確かめていない新しい脆弱性が無いかを調べる。
+# 脆弱性のアラートは今までどおり届く。
 #
 # Python dependency updates (uv) are not used: Dependabot cannot fetch the
 # mmcv-full wheel from download.openmmlab.com when it re-locks, so every run fails.
-# CI runs tools/audit.py every week instead; vulnerability alerts still arrive.
+# CI runs tools/audit.py every week instead (fixable, or new and not reviewed yet);
+# vulnerability alerts still arrive.
 #
 # 上げると動かなくなる物（手で更新するときの注意。理由は .github/SECURITY.md と tools/audit.py）:
 # - anime-face-detector・mmcv-full・mmdet・mmpose・torch・torchvision: 顔検出の組み合わせに固定
