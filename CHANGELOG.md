@@ -20,9 +20,13 @@ The dependency check (`tools/audit.py`, run by CI every week and on every change
 
 - `erase_mouth_offline.py` に `--debug` を付けると（CLI だけ。GUI は使わない）、口消し動画が `--out` に書かれず、最後のデバッグ画像（`frame_*.png`）が動画で上書きされていた。`--keep-audio`（GUI が使う）の時は、トラッキングの有効率が低い時の警告と `metrics.json` が出ていなかった。
 - 顔の追跡（`face_track_anime_detector.py`）が、動画のヘッダのフレーム数をそのまま使っていた。ヘッダの数が 0 だと空のトラックを保存して正常に終わり、多いと末尾に空の位置が付き、少ないと残りを解析せず、生の H.264 などの壊れた値では落ちていた。今は、実際に読めたフレームの数でトラックを作り、1 枚も読めなければエラーにする（普通の MP4・MKV・WebM では、ヘッダの数は正しかった）。
+- 「口消し範囲」のスライダーを動かしても保存されず、「キャリブのみ」や「③ ライブ実行」だけをして閉じると、次に開いた時に値が戻っていた。今は、ほかのスライダーと同じく、動かすたびに保存する。
+- ライブのランタイムを直接動かす時に、`--loop-video=clip.mp4` のように `=` で書く（または `--loop-vid` のように省いて書く）と、パスを渡していないとみなして前回の GUI のセッションを読み、渡した動画を置き換えていた（GUI からの起動には関係しない）。
 - 「② 口消し動画生成」の後に「mouthフォルダを選択」で口の素材を選び直すと、背景の動画が口消し動画から元の動画に戻り、「③ ライブ実行」で口が二重になっていた。今は、口のフォルダを選んでも背景の口消し動画はそのまま残る（動画の欄を別の動画に書き換えていた時だけ、新しい動画として扱う）。
 
 With `--debug` (command line only; the GUI does not use it), `erase_mouth_offline.py` did not write the video to `--out` and overwrote the last debug image with it; with `--keep-audio` (as the GUI runs it) the low-tracking-quality warning and `metrics.json` were skipped. The face tracker used the frame count in the video header: 0 saved an empty track and succeeded, a larger number left empty positions at the end, a smaller one left frames unanalysed, and the garbage value of a raw H.264 stream crashed it. It now uses the frames actually read, and fails if none can be read (the header was right for ordinary MP4, MKV and WebM files).
+
+Moving the coverage slider (口消し範囲) did not save it, so the value was lost after only calibrating or running live; it is saved like the other sliders now. When the live runtime is started by hand, a path given as `--loop-video=clip.mp4` (or an abbreviation such as `--loop-vid`) was not noticed, and the last GUI session replaced it (starting from the GUI was not affected). The runtime also creates its temporary result file with `mkstemp`, as the GUI does.
 
 Choosing the mouth folder again after "② 口消し動画生成" switched the background back from the mouthless video to the original one, so "③ ライブ実行" showed two mouths. Choosing the mouth folder now keeps the mouthless background (unless the video field was changed to a different video).
 

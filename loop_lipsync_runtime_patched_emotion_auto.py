@@ -21,6 +21,7 @@ import json
 import os
 import platform
 import sys
+import tempfile
 import threading
 import time
 import queue
@@ -191,9 +192,10 @@ def _write_json_atomic(path: str, payload: dict) -> None:
     out_path = os.path.abspath(path)
     out_dir = os.path.dirname(out_path) or HERE
     os.makedirs(out_dir, exist_ok=True)
-    tmp_path = os.path.join(out_dir, f".tmp_{time.time_ns()}.json")
+    # mkstemp, as the GUI does: a name nobody can guess or take first.
+    fd, tmp_path = tempfile.mkstemp(prefix=".tmp_", suffix=".json", dir=out_dir)
     try:
-        with open(tmp_path, "w", encoding="utf-8") as f:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(payload, f, ensure_ascii=False, indent=2)
         os.replace(tmp_path, out_path)
     finally:
@@ -1435,6 +1437,27 @@ def run(args) -> None:
         cleanup_audio_device_resolution(audio_resolution or {}, audio_apply_state)
 
 
+_PATH_FLAGS = ("--loop-video", "--assets-dir", "--tuber-num", "--mouth-dir", "--track", "--track-calibrated")
+
+
+def _user_specified_paths(argv: list[str], args) -> bool:
+    """True if the command line chose the video, the mouth folder or the tracks.
+
+    Then the last GUI session must not replace them. ``--loop-video=clip.mp4`` (one
+    token) and abbreviations such as ``--loop-vid`` or ``--tuber-n`` count too: argparse
+    accepts an abbreviation only when it names one option, so after parsing, an option
+    that begins one of the path flags is that flag. The paths also all default to "".
+    """
+    for tok in argv:
+        name = tok.split("=", 1)[0]
+        if len(name) > 2 and name.startswith("--") and any(flag.startswith(name) for flag in _PATH_FLAGS):
+            return True
+    return any(
+        getattr(args, name, "")
+        for name in ("loop_video", "assets_dir", "mouth_dir", "track", "track_calibrated")
+    )
+
+
 def load_last_session() -> dict:
     """GUIが保存した最後のセッション情報を読み込む"""
     try:
@@ -1526,9 +1549,7 @@ def parse_args():
     args = ap.parse_args()
 
     # Auto: 引数でパス系を指定していない場合は、最後のGUIセッションを自動復元する
-    argv = sys.argv[1:]
-    path_flags = {"--loop-video", "--assets-dir", "--tuber-num", "--mouth-dir", "--track", "--track-calibrated"}
-    user_specified_paths = any(tok in path_flags for tok in argv)
+    user_specified_paths = _user_specified_paths(sys.argv[1:], args)
     auto_use_last = (not args.no_auto_last_session) and (not args.use_last_session) and (not user_specified_paths)
     use_last = args.use_last_session or auto_use_last
     if auto_use_last:
