@@ -18,7 +18,8 @@ from collections import deque
 
 import cv2
 import numpy as np
-from PIL import Image, UnidentifiedImageError
+
+from motionpngtuber.image_io import read_png_rgba
 
 
 # ============================================================
@@ -31,16 +32,14 @@ def one_pole_beta(cutoff_hz: float, update_hz: int) -> float:
 
 
 def load_rgba(path: str) -> np.ndarray:
-    """Load a PNG image as an RGBA numpy array.
+    """Load a PNG image as an 8-bit RGBA numpy array.
 
-    Only the PNG decoder is used. Pillow otherwise picks the decoder from the
-    file contents, so a file named ``*.png`` from someone else could reach the
-    TIFF, JPEG or other decoders (see .github/SECURITY.md).
+    Only the PNG decoder is used (see :func:`motionpngtuber.image_io.read_png_rgba`
+    and .github/SECURITY.md).
     """
     try:
-        with Image.open(path, formats=["PNG"]) as im:
-            return np.array(im.convert("RGBA"), dtype=np.uint8)
-    except UnidentifiedImageError as e:
+        return read_png_rgba(path)
+    except ValueError as e:
         raise ValueError(f"mouth sprite is not a PNG file: {path}") from e
 
 

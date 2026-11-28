@@ -77,7 +77,7 @@ jobs:
       - name: uv
         uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
 
-      # Fails on any known vulnerability except the ones that cannot be fixed here
-      # (see tools/audit.py and .github/SECURITY.md).
+      # Fails on any known vulnerability except the reviewed ones that cannot be fixed
+      # here (REVIEWED in tools/audit.py; see .github/SECURITY.md).
       - name: uv audit
         run: python3 tools/audit.py

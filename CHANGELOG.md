@@ -5,11 +5,26 @@ Notable changes are recorded here. For earlier updates, see the update table at 
 
 ## Unreleased
 
+### セキュリティ / Security
+
+- キャリブレーションと「見た目確認（軽量）」も、口の画像を PNG としてだけ読むようにした。今までは OpenCV が中身から形式を選んでいて、`.png` という名前の TIFF・JPEG・WebP などもそのまま読んでいた（ライブ実行は v0.1.2 から PNG だけ）。グレースケール・パレット・16-bit の PNG は、どの画面でも同じ 8-bit の色で読む（16-bit のグレースケールは、今まで真っ白になっていた）。
+- [SECURITY.md](.github/SECURITY.md) の「ほかに起動する物」に、Windows の `taskkill`（停止の時）と、口消し動画の確認に OS の既定のアプリで開くことを書き足した。
+- 依存の脆弱性の検査（`tools/audit.py`。CI で毎週と変更のたびに走る）が、torch の新しい報告と、Pillow・setuptools の「直る版がまだ無い」報告を、読まずに除いていた。今は、影響を確かめた報告の ID（今の 70 件・106 の ID。`uv audit` の内容を 1 件ずつ読み、このアプリの使い方では届かないことを確かめた）だけを除き、新しい報告は確かめて ID を足すまで失敗する。直る版を入れられるようになった報告も失敗する。
+- [SECURITY.md](.github/SECURITY.md) に、`opencv-python` が NumPy 2 の制約で 4.11 のままであることと、OpenCV・Pillow が中に持つライブラリ（FFmpeg・libpng など）の穴は `uv audit` では見えないことを書いた。
+
+The calibration and the lightweight preview now read mouth images with the PNG decoder only, as the live runtime does since v0.1.2; before, OpenCV picked the decoder from the contents and also read TIFF, JPEG, WebP and other files named `.png`. Grayscale, palette and 16-bit PNGs are read with the same 8-bit colours everywhere (16-bit grayscale used to become white). SECURITY.md now also lists `taskkill` on Windows and opening the finished video with the default app.
+
+The dependency check (`tools/audit.py`, run by CI every week and on every change) left out every new torch advisory and every Pillow or setuptools advisory without a fixed version, without anybody reading them. It now leaves out only the advisories whose impact has been checked (70 advisories, 106 ids, each read and found unreachable in this app); a new advisory fails the check until it is reviewed and added, and so does an advisory whose fix becomes installable. SECURITY.md now also explains that opencv-python stays at 4.11 because of NumPy 2, and that `uv audit` cannot see vulnerabilities in the libraries bundled inside OpenCV and Pillow.
+
 ### 修正 / Fixed
 
+- `erase_mouth_offline.py` に `--debug` を付けると（CLI だけ。GUI は使わない）、口消し動画が `--out` に書かれず、最後のデバッグ画像（`frame_*.png`）が動画で上書きされていた。`--keep-audio`（GUI が使う）の時は、トラッキングの有効率が低い時の警告と `metrics.json` が出ていなかった。
+- 顔の追跡（`face_track_anime_detector.py`）が、動画のヘッダのフレーム数をそのまま使っていた。ヘッダの数が 0 だと空のトラックを保存して正常に終わり、多いと末尾に空の位置が付き、少ないと残りを解析せず、生の H.264 などの壊れた値では落ちていた。今は、実際に読めたフレームの数でトラックを作り、1 枚も読めなければエラーにする（普通の MP4・MKV・WebM では、ヘッダの数は正しかった）。
 - 「口消し範囲」のスライダーを動かしても保存されず、「キャリブのみ」や「③ ライブ実行」だけをして閉じると、次に開いた時に値が戻っていた。今は、ほかのスライダーと同じく、動かすたびに保存する。
 - ライブのランタイムを直接動かす時に、`--loop-video=clip.mp4` のように `=` で書く（または `--loop-vid` のように省いて書く）と、パスを渡していないとみなして前回の GUI のセッションを読み、渡した動画を置き換えていた（GUI からの起動には関係しない）。
 - 「② 口消し動画生成」の後に「mouthフォルダを選択」で口の素材を選び直すと、背景の動画が口消し動画から元の動画に戻り、「③ ライブ実行」で口が二重になっていた。今は、口のフォルダを選んでも背景の口消し動画はそのまま残る（動画の欄を別の動画に書き換えていた時だけ、新しい動画として扱う）。
+
+With `--debug` (command line only; the GUI does not use it), `erase_mouth_offline.py` did not write the video to `--out` and overwrote the last debug image with it; with `--keep-audio` (as the GUI runs it) the low-tracking-quality warning and `metrics.json` were skipped. The face tracker used the frame count in the video header: 0 saved an empty track and succeeded, a larger number left empty positions at the end, a smaller one left frames unanalysed, and the garbage value of a raw H.264 stream crashed it. It now uses the frames actually read, and fails if none can be read (the header was right for ordinary MP4, MKV and WebM files).
 
 Moving the coverage slider (口消し範囲) did not save it, so the value was lost after only calibrating or running live; it is saved like the other sliders now. When the live runtime is started by hand, a path given as `--loop-video=clip.mp4` (or an abbreviation such as `--loop-vid`) was not noticed, and the last GUI session replaced it (starting from the GUI was not affected). The runtime also creates its temporary result file with `mkstemp`, as the GUI does.
 
