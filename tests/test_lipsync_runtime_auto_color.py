@@ -144,8 +144,10 @@ class BgVideoReadFrameAtTests(unittest.TestCase):
     def setUp(self) -> None:
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
-        self.path = os.path.join(tmp.name, "loop.mp4")
-        writer = cv2.VideoWriter(self.path, cv2.VideoWriter_fourcc(*"mp4v"), 30.0, (64, 48))
+        # MJPG: every frame is a key frame, so OpenCV seeks exactly (with mp4v its seek
+        # can be one frame off, which would test OpenCV rather than read_frame_at).
+        self.path = os.path.join(tmp.name, "loop.avi")
+        writer = cv2.VideoWriter(self.path, cv2.VideoWriter_fourcc(*"MJPG"), 30.0, (64, 48))
         self.assertTrue(writer.isOpened())
         for i in range(self.N):
             writer.write(np.full((48, 64, 3), (8 * i, 100, 50), np.uint8))  # BGR: blue = 8 * frame
