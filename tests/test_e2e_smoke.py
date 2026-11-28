@@ -16,14 +16,15 @@ except ModuleNotFoundError:
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-SMOKE_ASSET_DIR = REPO_ROOT / "assets" / "t0309"
-SMOKE_VIDEO = SMOKE_ASSET_DIR / "t0309.mp4"
+# The bundled sample. (These tests used to point at assets/t0309, which is not in
+# the repository, so they were always skipped.)
+SMOKE_ASSET_DIR = REPO_ROOT / "assets" / "asmr_tomari"
+SMOKE_VIDEO = SMOKE_ASSET_DIR / "asmr_loop.mp4"
 SMOKE_TRACK = SMOKE_ASSET_DIR / "mouth_track.npz"
 SMOKE_TRACK_CALIBRATED = SMOKE_ASSET_DIR / "mouth_track_calibrated.npz"
 SMOKE_MOUTH_DIR = SMOKE_ASSET_DIR / "mouth"
 
 
-@unittest.skipUnless(SMOKE_ASSET_DIR.is_dir(), "smoke asset directory is missing")
 class EndToEndSmokeTests(unittest.TestCase):
     def test_build_workflow_paths_on_sample_asset(self):
         paths, err = build_workflow_paths(
