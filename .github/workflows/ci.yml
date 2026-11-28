@@ -35,12 +35,15 @@ jobs:
       - name: uv
         uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
 
-      # sounddevice needs PortAudio, and the GUI build of OpenCV needs libGL.
-      - name: Libraries (Linux)
+      # sounddevice needs PortAudio, which does not start without a sound server
+      # (import sounddevice fails), and the GUI build of OpenCV needs libGL.
+      - name: Libraries and a sound server (Linux)
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends libportaudio2 libgl1
+          sudo apt-get install -y --no-install-recommends libportaudio2 libgl1 pulseaudio
+          pulseaudio --start --exit-idle-time=-1
+          pactl info
 
       # The tests do not need the face detector (torch, mmcv, ...: several GB).
       # full-install.yml installs everything when the dependencies change.

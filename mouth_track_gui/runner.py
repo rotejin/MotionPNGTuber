@@ -65,6 +65,9 @@ class CommandRunner:
         self._lock = threading.Lock()  # guards _active_proc
         self._soft_requested = threading.Event()
         self._force_requested = threading.Event()
+        # The child that force_stop() killed. On Linux / macOS the kill (SIGKILL)
+        # is instant, so the child can be gone before _drain_output looks at it.
+        self._force_killed: subprocess.Popen | None = None
 
     # ------------------------------------------------------------------
     # Public API – main thread
@@ -84,12 +87,16 @@ class CommandRunner:
         with self._lock:
             p = self._active_proc
         if p and p.poll() is None:
+            # Set before the kill, so that a dead child seen by _drain_output
+            # is known to be stopped rather than finished.
+            self._force_killed = p
             self._terminate_proc_tree(p)
 
     def reset(self) -> None:
         """Clear all stop flags.  Call before a new workflow."""
         self._soft_requested.clear()
         self._force_requested.clear()
+        self._force_killed = None
 
     @property
     def soft_requested(self) -> bool:
@@ -235,6 +242,9 @@ class CommandRunner:
                 if p.poll() is None:
                     was_stopped = True
                     self._terminate_proc_tree(p)
+                elif self._force_killed is p:
+                    # force_stop() already killed it (instant on Linux / macOS).
+                    was_stopped = True
 
             # Soft stop — send signal only if this run allows it
             if (
@@ -257,6 +267,14 @@ class CommandRunner:
                 break
             if isinstance(item, str):
                 self._on_log(item.rstrip("\n"))
+
+        # A force stop that arrived while the loop was waiting for output: the
+        # kill closes the child's output, so the loop can end before it sees
+        # the request. It counts as stopped only if force_stop() killed this child.
+        if self._force_requested.is_set() and not force_observed:
+            stop_requested = True
+            if self._force_killed is p:
+                was_stopped = True
 
         return DrainResult(
             was_stopped=was_stopped, stop_requested=stop_requested,
