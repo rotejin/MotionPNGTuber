@@ -50,6 +50,9 @@ By using looping video, you can achieve rich expressions like **hair swaying** a
   - [Mouth PNG Color Correction](#-mouth-png-color-correction)
 - [Detailed Reference](#-detailed-reference)
 - [Tests](#-tests)
+- [Support and contributing](#-support-and-contributing)
+- [Related repositories](#-related-repositories)
+- [License](#-license)
 
 ---
 
@@ -78,6 +81,8 @@ uv run python mouth_track_gui.py
 ```
 
 > Note: some older articles still refer to `assets01` / `assets03`. The current sample set on `main` is `assets/asmr_tomari/`.
+>
+> ⚠️ The bundled sample character (Tomari, in `assets/asmr_tomari/` and `mouth_dir/Tomari/`) is there for trying the tools and is **not covered by the MIT License**. Non-commercial posts of your trial on social media are fine; using it as your own avatar or reusing it elsewhere is not. See [ASSETS.md](ASSETS.md).
 
 ---
 
@@ -443,12 +448,14 @@ Use these when passing mouth track data to a browser implementation.
 - `*_mouthless_h264.mp4` is recommended for browser / player use when `ffmpeg` is available
 - If `ffmpeg` is missing, the GUI still exports `mouth_track.json` and logs that H.264 export was skipped
 
-For **MotionPNGTuber_Player** and other browser implementations that use **AudioWorklet**, opening files via `file://` may block mic / worklet loading. In that case, serve the folder locally:
+For **[MotionPNGTuber_Player](https://github.com/rotejin/MotionPNGTuber_Player)** and other browser implementations that use **AudioWorklet**, opening files via `file://` may block mic / worklet loading. In that case, serve the folder locally:
 
 ```bash
-python -m http.server 8000
-# then open http://localhost:8000
+python -m http.server 8000 --bind 127.0.0.1
+# then open http://127.0.0.1:8000
 ```
+
+`--bind 127.0.0.1` keeps the server reachable from your own PC only (without it, other devices on the same network can see the files).
 
 </details>
 
@@ -516,8 +523,10 @@ MotionPNGTuber/
 │   └── workflow_validation.py                      #   Workflow validation
 ├── convert_npz_to_json.py                          # npz → JSON conversion
 ├── tests/                                          # Test suite
-├── assets/                                         # Sample assets
-├── mouth_dir/                                      # Mouth sprites (sample)
+├── tools/audit.py                                  # Dependency vulnerability check (also run in CI)
+├── assets/                                         # Sample assets (not MIT; see ASSETS.md)
+├── mouth_dir/                                      # Mouth sprites (sample; not MIT)
+├── ASSETS.md                                       # Terms for the sample assets
 ├── pyproject.toml                                  # Dependencies (Windows / Linux)
 └── pyproject.macos.toml                            # Dependencies (macOS)
 ```
@@ -598,13 +607,29 @@ uv run python -m unittest discover -s tests -p "test_e2e_smoke.py" -v
 Note: keep `-s tests`. Plain `python -m unittest discover` may collect **0 tests**
 in this repository layout depending on the launch directory.
 
-As of 2026-04-13: verified with **261 tests / 3 skip** passing.
+As of 2026-11-28: verified with **274 tests / 1 skip** passing (GitHub Actions also runs them on Windows and Ubuntu).
+
+---
+
+## 🤝 Support and contributing
+
+- Questions and bug reports: [Support](.github/SUPPORT.md)
+- Reporting vulnerabilities: [Security policy](.github/SECURITY.md)
+- Contributing: [CONTRIBUTING](.github/CONTRIBUTING.md)
+- Changes: [CHANGELOG.md](CHANGELOG.md)
+
+## 🔗 Related repositories
+
+- [MotionPNGTuber_Player](https://github.com/rotejin/MotionPNGTuber_Player) — a browser player that lip-syncs the exported `mouth_track.json` and mouthless video
+- [MotionPNGTuber_Avatars](https://github.com/rotejin/MotionPNGTuber_Avatars) — avatar assets ready to use in the player
 
 ---
 
 ## 📄 License
 
-MIT License
+The source code, scripts and documents are under the [MIT License](LICENSE).
+
+The bundled character assets (Tomari, in `assets/asmr_tomari/` and `mouth_dir/Tomari/`) are **not covered by the MIT License**. You may try the tools with them and post non-commercial clips of your trial, but you may not use them as your own avatar, reuse or redistribute them, or use them commercially. See [ASSETS.md](ASSETS.md).
 
 ## 🙏 Acknowledgements
 

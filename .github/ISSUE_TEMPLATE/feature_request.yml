@@ -1,0 +1,39 @@
+name: 要望 / Feature request
+description: こんな機能や動きがほしい / Suggest an improvement
+title: "[要望]: "
+labels:
+  - enhancement
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: 困っていること・したいこと / Problem
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: ほしい機能や動き / Proposed solution
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: ほかに考えた方法 / Alternatives considered
+    validations:
+      required: false
+
+  - type: dropdown
+    id: screen
+    attributes:
+      label: どの画面か / Screen
+      options:
+        - メイン GUI（mouth_track_gui.py） / Main GUI
+        - 口 PNG 素材作成 GUI（mouth_sprite_extractor_gui.py） / Mouth PNG GUI
+        - コマンド（CLI） / Command line
+        - ドキュメント / Documentation
+        - その他 / Other
+    validations:
+      required: true

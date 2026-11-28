@@ -91,6 +91,35 @@ class CommandRunnerForceStopTests(unittest.TestCase):
         self.assertTrue(result.was_stopped)
         self.assertFalse(runner.is_running)
 
+    def test_force_stop_with_an_instant_kill_reports_stopped(self):
+        """On Linux / macOS the kill is instant: the child is already gone when
+        the output loop sees the request. It must still count as stopped (the
+        GUI shows an error dialog otherwise)."""
+
+        def instant_kill(p):
+            p.kill()
+            p.wait()
+
+        runner = CommandRunner(on_log=lambda _line: None)
+        code = "import time\nfor i in range(100):\n    print(f'tick{i}', flush=True)\n    time.sleep(0.1)"
+
+        def stop_later():
+            time.sleep(0.3)
+            runner.force_stop()
+
+        with mock.patch.object(CommandRunner, "_terminate_proc_tree", staticmethod(instant_kill)):
+            threading.Thread(target=stop_later, daemon=True).start()
+            result = runner.run_stream([sys.executable, "-c", code])
+
+        self.assertTrue(result.was_stopped)
+        self.assertTrue(result.stop_requested)
+
+    def test_reset_forgets_the_killed_child(self):
+        runner = CommandRunner(on_log=lambda _line: None)
+        runner._force_killed = object()
+        runner.reset()
+        self.assertIsNone(runner._force_killed)
+
 
 class CommandRunnerSoftStopTests(unittest.TestCase):
     def test_soft_then_force_reports_stopped(self):

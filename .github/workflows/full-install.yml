@@ -1,0 +1,74 @@
+name: Full install
+
+# Installs every dependency, including the face detector (torch, mmcv-full, ...:
+# several GB), and runs the detector on the bundled sample. This catches updates
+# that install fine but break the detector, such as setuptools 70 or later.
+on:
+  push:
+    branches: [main]
+    paths:
+      - pyproject.toml
+      - uv.lock
+      - face_track_anime_detector.py
+      - .github/workflows/full-install.yml
+  pull_request:
+    paths:
+      - pyproject.toml
+      - uv.lock
+      - face_track_anime_detector.py
+      - .github/workflows/full-install.yml
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  full-install:
+    name: Face detector on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+
+    env:
+      PYTHONIOENCODING: utf-8
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The packages are several GB, so do not keep them in the Actions cache.
+      - name: uv
+        uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
+        with:
+          enable-cache: false
+
+      - name: Libraries (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libportaudio2 libgl1
+
+      - name: Install everything that uv.lock lists
+        run: uv sync --locked
+
+      # import mmcv reads torch.utils.cpp_extension, which needs pkg_resources.packaging.
+      - name: The face detector packages import
+        run: uv run --locked --no-sync python -c "import torch, mmcv, mmdet, mmpose, anime_face_detector; print('torch', torch.__version__, 'mmcv', mmcv.__version__, 'mmdet', mmdet.__version__, 'mmpose', mmpose.__version__)"
+
+      # Downloads the weights, checks their SHA-256 and tracks the mouth on the CPU.
+      - name: Track the mouth in the bundled sample
+        shell: bash
+        run: |
+          out="$RUNNER_TEMP/mouth_track.npz"
+          uv run --locked --no-sync python face_track_anime_detector.py \
+            --video assets/asmr_tomari/asmr_loop.mp4 --out "$out" --device cpu --det-scale 0.5
+          uv run --locked --no-sync python -c "import sys, numpy as np; z = np.load(sys.argv[1], allow_pickle=False); v = z['valid']; print('frames', len(v), 'valid', int(v.sum())); assert v.sum() > 0.5 * len(v)" "$out"

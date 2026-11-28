@@ -32,6 +32,7 @@ ORBベースの手法と異なり、フレームごとに独立して検出す�
 from __future__ import annotations
 
 import argparse
+import hashlib
 import os
 import json
 import shutil
@@ -46,7 +47,7 @@ from motionpngtuber.image_io import write_image_file
 
 # anime-face-detector
 try:
-    from anime_face_detector import create_detector
+    from anime_face_detector import create_detector, get_checkpoint_path
     HAS_ANIME_DETECTOR = True
 except ImportError:
     HAS_ANIME_DETECTOR = False
@@ -80,7 +81,51 @@ def is_cuda_runtime_error(exc: BaseException | str) -> bool:
     return any(marker in text for marker in CUDA_RUNTIME_ERROR_MARKERS)
 
 
+# anime-face-detector 0.0.9 downloads its weights the first time it is used, from
+# https://github.com/hysts/anime-face-detector/releases/tag/v0.0.1 , into the
+# torch hub cache. The weights are read with torch.load (pickle), which can run
+# code, so check that they are the published files before they are read.
+# (Each value was the same for a fresh download and for a copy downloaded in 2025.)
+DETECTOR_CHECKPOINT_SHA256 = {
+    "yolov3": "38208bb6b8a4633193feba532e96ed9a7942129af8fe948b27bfcf8e9a30a12e",
+    "hrnetv2": "65b9951b29fb708a89c0467678094dd19b0136cddaf1366eb9d1e6e310dee842",
+}
+LANDMARK_MODEL = "hrnetv2"  # what create_detector() uses by default
+_verified_checkpoints: set[str] = set()
+
+
+def file_sha256(path) -> str:
+    digest = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def verify_detector_checkpoints(model: str) -> None:
+    """Download the weights if needed, and refuse any file that is not the published one."""
+    for name in (model, LANDMARK_MODEL):
+        if name in _verified_checkpoints:
+            continue
+        expected = DETECTOR_CHECKPOINT_SHA256.get(name)
+        if expected is None:
+            raise RuntimeError(f"no known SHA-256 for the '{name}' weights")
+        path = get_checkpoint_path(name)
+        actual = file_sha256(path)
+        if actual != expected:
+            raise RuntimeError(
+                f"顔検出の重みファイルが、公開されている物と一致しません: {path}\n"
+                "このファイルを削除してから、もう一度実行してください（次に自動で取り直します）。\n"
+                f"The '{name}' weights do not match the published file: {path}\n"
+                "Delete this file and run again to download it again.\n"
+                f"  expected SHA-256: {expected}\n"
+                f"  actual SHA-256:   {actual}"
+            )
+        _verified_checkpoints.add(name)
+
+
 def create_detector_with_fallback(model: str, requested_device: str):
+    verify_detector_checkpoints(model)
     detector = None
     last_err = None
     used_device = requested_device
@@ -875,7 +920,11 @@ def main() -> int:
     # device fallback:
     # - --device auto: try cuda:0 then cpu
     # - --device cuda:*: if init fails, fallback cpu
-    detector, current_device = create_detector_with_fallback(args.model, args.device)
+    try:
+        detector, current_device = create_detector_with_fallback(args.model, args.device)
+    except RuntimeError as e:
+        print(f"[error] {e}")
+        return 1
     cap = cv2.VideoCapture(args.video)
     if not cap.isOpened():
         print(f"[error] failed to open video: {args.video}")

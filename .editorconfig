@@ -1,0 +1,29 @@
+# Editor settings that match .gitattributes and the existing files.
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+indent_style = space
+insert_final_newline = true
+
+[*.{py,toml}]
+indent_size = 4
+
+[*.{yml,yaml}]
+indent_size = 2
+
+[*.md]
+# Two trailing spaces can be a line break in Markdown.
+trim_trailing_whitespace = false
+
+# Written by uv: leave it exactly as it is.
+[uv.lock]
+indent_style = unset
+indent_size = unset
+
+# Tracking data written by the tools: leave it exactly as it is.
+[assets/**/mouth_track.json]
+indent_style = unset
+indent_size = unset
+insert_final_newline = unset
