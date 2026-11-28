@@ -1,0 +1,92 @@
+name: 不具合の報告 / Bug report
+description: 入らない、起動しない、解析が止まる、口がずれる、口が動かない / It does not install, start or work as expected
+title: "[不具合]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        報告ありがとうございます。Issue は誰でも見られます。個人情報や、使ってよいか分からない画像・動画は貼らないでください。
+        Thanks for the report. Issues are public: please remove personal information and images or videos you may not share.
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: 何が起きたか / What happened
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: 再現の手順 / Steps to reproduce
+      placeholder: |
+        1. uv run python mouth_track_gui.py
+        2. 動画に assets/asmr_tomari/asmr_loop.mp4 を選ぶ
+        3. 「① 解析→キャリブ」を押す
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: 期待した動き / Expected behavior
+    validations:
+      required: false
+
+  - type: dropdown
+    id: screen
+    attributes:
+      label: どの画面か / Screen
+      options:
+        - メイン GUI（mouth_track_gui.py） / Main GUI
+        - 口 PNG 素材作成 GUI（mouth_sprite_extractor_gui.py） / Mouth PNG GUI
+        - コマンド（CLI） / Command line
+        - インストール（uv sync） / Installation
+        - ドキュメント / Documentation
+        - その他 / Other
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: OS / Operating system
+      placeholder: Windows 11 24H2
+    validations:
+      required: true
+
+  - type: input
+    id: python
+    attributes:
+      label: Python のバージョン / Python version
+      description: uv run python --version
+      placeholder: Python 3.10.11
+    validations:
+      required: true
+
+  - type: input
+    id: gpu
+    attributes:
+      label: GPU と CUDA / GPU and CUDA
+      description: uv run python -c "import torch; print(torch.cuda.is_available())"
+      placeholder: RTX 4070 / True
+    validations:
+      required: false
+
+  - type: input
+    id: video
+    attributes:
+      label: 動画の大きさと長さ / Video size and length
+      placeholder: 1920×1080、25fps、8 秒
+    validations:
+      required: false
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: 表示されたメッセージ・スクリーンショット / Messages and screenshots
+      description: 画面のログ欄やターミナルに出た文字があれば貼ってください / Text from the log area or the terminal
+    validations:
+      required: false

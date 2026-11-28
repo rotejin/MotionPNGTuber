@@ -1,0 +1,76 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Tests on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+
+    env:
+      PYTHONIOENCODING: utf-8
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: uv
+        uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
+
+      # sounddevice needs PortAudio, and the GUI build of OpenCV needs libGL.
+      - name: Libraries (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libportaudio2 libgl1
+
+      # The tests do not need the face detector (torch, mmcv, ...: several GB).
+      # full-install.yml installs everything when the dependencies change.
+      # --locked fails when uv.lock does not match pyproject.toml.
+      - name: Install the locked dependencies (without the face detector)
+        run: >-
+          uv sync --locked --no-install-project
+          --no-install-package torch --no-install-package torchvision
+          --no-install-package mmcv-full --no-install-package mmdet --no-install-package mmpose
+          --no-install-package anime-face-detector --no-install-package xtcocotools
+          --no-install-package chumpy
+
+      - name: Tests
+        run: uv run --locked --no-sync python -m unittest discover -s tests -v
+
+  audit:
+    name: Known vulnerabilities in the dependencies
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: uv
+        uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
+
+      # Fails on any known vulnerability except the ones that cannot be fixed here
+      # (see tools/audit.py and .github/SECURITY.md).
+      - name: uv audit
+        run: python3 tools/audit.py

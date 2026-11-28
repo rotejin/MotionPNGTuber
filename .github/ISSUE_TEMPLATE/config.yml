@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 使い方の動画（YouTube） / Video guide (Japanese)
+    url: https://www.youtube.com/watch?v=mxZHzZ_eAkY
+    about: 画面つきの使い方はこちら / A walkthrough of the tools.
+  - name: ブラウザのプレイヤーのこと / MotionPNGTuber Player
+    url: https://github.com/rotejin/MotionPNGTuber_Player/issues
+    about: プレイヤーの使い方や不具合はこちらへ / For problems with the browser player.
+  - name: 作者への連絡（X） / Contact the author (X)
+    url: https://x.com/rotejin
+    about: Issue に合わない連絡はこちらへ / For anything that is not an issue.
