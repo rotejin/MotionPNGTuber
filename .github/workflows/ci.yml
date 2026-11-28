@@ -5,6 +5,10 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+  # Every week, so that a newly published vulnerability that can be fixed is
+  # noticed (Dependabot cannot update the Python dependencies here; see dependabot.yml).
+  schedule:
+    - cron: "17 3 * * 1"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}

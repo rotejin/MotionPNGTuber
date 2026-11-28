@@ -477,7 +477,7 @@ wheels = [
 
 [[package]]
 name = "motionpngtuber"
-version = "0.1.0"
+version = "0.1.2"
 source = { editable = "." }
 dependencies = [
     { name = "anime-face-detector", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },

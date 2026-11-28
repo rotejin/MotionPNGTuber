@@ -15,6 +15,7 @@ By using looping video, you can achieve rich expressions like **hair swaying** a
 
 | Date | Details |
 |------|---------|
+| 2026/11/28 | **Security update (v0.1.2)**. Fixed vulnerable dependencies (Pillow, urllib3, requests, ...). Mouth PNGs are decoded as PNG only, and the face detector weights are checked by hash before they are loaded. Fixed force stop being reported as an error on Linux and macOS. The terms for the bundled sample (Tomari) are in [ASSETS.md](ASSETS.md) |
 | 2026/04/13 | Fixed a critical bug where selecting a video in **Create mouth PNG sprites** could immediately fail with `Analysis error` because the auto detector script path was resolved incorrectly. Added a regression test for script-path lookup |
 | 2026/04/10 | **Developer snapshot release**. HUD display now defaults to OFF. Internal refactoring and bug fixes |
 | 2026/04/05 | **Ubuntu 22.04 experimental support** (Linux microphone input now available). **Added mouth PNG color correction** (brightness/saturation/color temperature sliders + auto-correction button). Improved GUI stability |
