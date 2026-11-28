@@ -7,7 +7,11 @@ Notable changes are recorded here. For earlier updates, see the update table at 
 
 ### 修正 / Fixed
 
+- 口PNG素材を作る画面で、「候補に口形を自動割当」・候補のサムネイル・プレビューの更新・自動切り抜きが、それぞれ候補のフレームを 1 枚ずつシークして読み直していたため、キーフレームの少ない大きな動画で画面が止まっていた（2160×3900 の動画の 20 候補で 13 秒ずつ）。今は、フレームの順にまとめて読み（近いフレームへは前へ読み進める）、読んだ口の画像を使い回す（同じ動画で 1.3 秒、2 回目からは待ち無し）。
+- 口PNG素材を作る画面で、顔検出が失敗した時の案内（重みの取り直しの方法など）が表示されず、「Face detector failed:」だけになっていた（顔検出は案内を stdout に出すのに、stderr だけを見ていたため）。今は両方の最後の行を出し、子の出力を UTF-8 にそろえる。
 - 「② 口消し動画生成」の後に「mouthフォルダを選択」で口の素材を選び直すと、背景の動画が口消し動画から元の動画に戻り、「③ ライブ実行」で口が二重になっていた。今は、口のフォルダを選んでも背景の口消し動画はそのまま残る（動画の欄を別の動画に書き換えていた時だけ、新しい動画として扱う）。
+
+In the mouth sprite tool, auto assign, the candidate thumbnails, the preview and auto crop each seeked to every candidate frame again, which froze the window on large clips with few key frames (13 s each for 20 candidates on a 2160x3900 clip); the frames are now read in order, reading forward between nearby ones, and the mouth patches are shared (1.3 s, then no wait). When the face detector failed, the tool only showed "Face detector failed:", because the detector prints its advice (such as how to get the weights again) to stdout and only stderr was shown; both are shown now, and the child's output is UTF-8.
 
 Choosing the mouth folder again after "② 口消し動画生成" switched the background back from the mouthless video to the original one, so "③ ライブ実行" showed two mouths. Choosing the mouth folder now keeps the mouthless background (unless the video field was changed to a different video).
 
