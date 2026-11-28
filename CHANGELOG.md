@@ -7,7 +7,11 @@ Notable changes are recorded here. For earlier updates, see the update table at 
 
 ### 修正 / Fixed
 
+- 実行中（ライブ・解析など）にメインの窓を「×」で閉じると、子のプロセス（ライブの窓とマイク・解析など）が数分残り、ライブ用の一時フォルダが `%TEMP%` に残っていた。今は、実行中なら「止めて終了しますか？」と聞き、止めて一時フォルダを消してから閉じる。② の後の確認の再生（OpenCV の窓）も、そのとき止まる。
+- Windows で「① 解析→キャリブ」をするたびに、`%TEMP%\auto_mouth_track_*` に解析の候補のファイルが残っていた（開いたままのファイルは消せないため）。
 - 「② 口消し動画生成」の後に「mouthフォルダを選択」で口の素材を選び直すと、背景の動画が口消し動画から元の動画に戻り、「③ ライブ実行」で口が二重になっていた。今は、口のフォルダを選んでも背景の口消し動画はそのまま残る（動画の欄を別の動画に書き換えていた時だけ、新しい動画として扱う）。
+
+Closing the main window (×) while something was running left the child process (the live window and microphone, the analysis, ...) running for minutes and the live temp folder in `%TEMP%`; it now asks whether to stop, stops it and removes the folder before closing (the playback after ② stops too). On Windows every analysis also left a candidate track in `%TEMP%\auto_mouth_track_*`, because the file was still open when the folder was removed.
 
 Choosing the mouth folder again after "② 口消し動画生成" switched the background back from the mouthless video to the original one, so "③ ライブ実行" showed two mouths. Choosing the mouth folder now keeps the mouthless background (unless the video field was changed to a different video).
 

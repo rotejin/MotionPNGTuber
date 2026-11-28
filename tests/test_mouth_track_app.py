@@ -356,5 +356,90 @@ class PickMouthDirSessionTests(unittest.TestCase):
         self.assertFalse(_same_video_path(self.source, self.mouthless))
 
 
+class CloseWindowTests(unittest.TestCase):
+    """Closing the window (×) stops the running step and removes the live temp folder.
+
+    Before, the window closed at once: the worker (a daemon thread) vanished without its
+    finally block, the live window and microphone stayed for minutes and the IPC
+    folder stayed in %TEMP% for good.
+    """
+
+    def make_app(self, *, running: bool):
+        import threading
+
+        worker = mock.Mock()
+        worker.is_alive.return_value = running
+        scheduled = []
+        fake = SimpleNamespace(
+            _closing=False,
+            worker_thread=worker,
+            stop_flag=threading.Event(),
+            runner=mock.Mock(),
+            withdraw=mock.Mock(),
+            destroy=mock.Mock(),
+            _cancel_auto_color_poll=mock.Mock(),
+            _cleanup_live_ipc_session=mock.Mock(),
+            after=lambda _ms, callback: scheduled.append(callback),
+        )
+        fake._close_when_worker_done = lambda deadline: App._close_when_worker_done(fake, deadline)
+        return fake, worker, scheduled
+
+    def close(self, fake, *, answer: bool = True):
+        with mock.patch("mouth_track_gui.app.messagebox.askyesno", return_value=answer) as ask:
+            App._on_close_window(fake)
+        return ask
+
+    def test_closes_at_once_when_nothing_runs(self):
+        fake, _worker, scheduled = self.make_app(running=False)
+        ask = self.close(fake)
+        ask.assert_not_called()
+        fake._cleanup_live_ipc_session.assert_called_once()
+        fake.destroy.assert_called_once()
+        self.assertEqual(scheduled, [])
+
+    def test_answering_no_keeps_everything_running(self):
+        fake, _worker, _scheduled = self.make_app(running=True)
+        ask = self.close(fake, answer=False)
+        ask.assert_called_once()
+        self.assertFalse(fake.stop_flag.is_set())
+        fake.runner.force_stop.assert_not_called()
+        fake.withdraw.assert_not_called()
+        fake.destroy.assert_not_called()
+        self.assertFalse(fake._closing)
+
+    def test_stops_the_child_and_waits_for_the_worker(self):
+        fake, worker, scheduled = self.make_app(running=True)
+        self.close(fake)
+        self.assertTrue(fake.stop_flag.is_set())
+        fake.runner.force_stop.assert_called()
+        fake.withdraw.assert_called_once()
+        fake._cancel_auto_color_poll.assert_called_once()
+        # The worker is still running its finally block: wait with after(), not join().
+        fake.destroy.assert_not_called()
+        self.assertEqual(len(scheduled), 1)
+
+        worker.is_alive.return_value = False
+        scheduled.pop()()
+        fake._cleanup_live_ipc_session.assert_called_once()
+        fake.destroy.assert_called_once()
+
+    def test_closes_after_the_deadline_even_if_the_worker_hangs(self):
+        fake, _worker, scheduled = self.make_app(running=True)
+        with mock.patch("mouth_track_gui.app.time.monotonic", return_value=100.0):
+            self.close(fake)
+        self.assertEqual(len(scheduled), 1)
+        with mock.patch("mouth_track_gui.app.time.monotonic", return_value=103.5):
+            scheduled.pop()()
+        fake._cleanup_live_ipc_session.assert_called_once()
+        fake.destroy.assert_called_once()
+
+    def test_second_close_is_ignored(self):
+        fake, _worker, _scheduled = self.make_app(running=True)
+        fake._closing = True
+        ask = self.close(fake)
+        ask.assert_not_called()
+        fake.destroy.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()

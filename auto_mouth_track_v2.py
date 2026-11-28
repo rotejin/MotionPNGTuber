@@ -110,14 +110,14 @@ def _quad_centers(quads: np.ndarray) -> np.ndarray:
 
 
 def compute_metrics_npz(npz_path: str) -> Metrics:
-    npz = np.load(npz_path, allow_pickle=False)
-    quads = np.asarray(npz["quad"], dtype=np.float32)
-    N = int(quads.shape[0])
-    valid = np.asarray(npz.get("valid", np.ones((N,), np.uint8)), dtype=np.uint8) > 0
-    conf = np.asarray(npz.get("confidence", np.ones((N,), np.float32)), dtype=np.float32)
+    with np.load(npz_path, allow_pickle=False) as npz:
+        quads = np.asarray(npz["quad"], dtype=np.float32)
+        N = int(quads.shape[0])
+        valid = np.asarray(npz.get("valid", np.ones((N,), np.uint8)), dtype=np.uint8) > 0
+        conf = np.asarray(npz.get("confidence", np.ones((N,), np.float32)), dtype=np.float32)
+        w = float(npz.get("w", 0))
+        h = float(npz.get("h", 0))
     conf = conf[:N]
-    w = float(npz.get("w", 0))
-    h = float(npz.get("h", 0))
     diag = float(np.hypot(w, h)) if (w and h) else 1.0
 
     n_valid = int(valid.sum())
@@ -190,10 +190,10 @@ def save_best_debug_outputs(debug_dir: str, best_npz: str, report: dict) -> None
         json.dump(report, f, ensure_ascii=False, indent=2)
 
     # plot from npz (confidence/valid/jitter) without matplotlib
-    z = np.load(best_npz, allow_pickle=False)
-    conf = np.asarray(z.get("confidence", []), dtype=np.float32)
-    valid = np.asarray(z.get("valid", []), dtype=np.uint8)
-    quad = np.asarray(z.get("quad", []), dtype=np.float32)
+    with np.load(best_npz, allow_pickle=False) as z:
+        conf = np.asarray(z.get("confidence", []), dtype=np.float32)
+        valid = np.asarray(z.get("valid", []), dtype=np.uint8)
+        quad = np.asarray(z.get("quad", []), dtype=np.float32)
     if quad.ndim == 3 and quad.shape[1:] == (4, 2):
         centers = quad.mean(axis=1)
         d = np.linalg.norm(np.diff(centers, axis=0), axis=1).astype(np.float32)
@@ -334,40 +334,39 @@ def _find_bad_segments(valid: np.ndarray, conf: Optional[np.ndarray], bad_conf_t
 
 def _stitch_segment(base_npz: str, seg_npz: str, dst_npz: str, offset: int) -> None:
     """Replace [offset:offset+len(seg)) in base with seg arrays. Keep other keys from base."""
-    b = np.load(base_npz, allow_pickle=False)
-    s = np.load(seg_npz, allow_pickle=False)
-    b_quad = np.asarray(b["quad"], dtype=np.float32).copy()
-    b_valid = np.asarray(b.get("valid", np.ones((b_quad.shape[0],), np.uint8)), dtype=np.uint8).copy()
-    b_conf = np.asarray(b.get("confidence", np.ones((b_quad.shape[0],), np.float32)), dtype=np.float32).copy()
+    with np.load(base_npz, allow_pickle=False) as b, np.load(seg_npz, allow_pickle=False) as s:
+        b_quad = np.asarray(b["quad"], dtype=np.float32).copy()
+        b_valid = np.asarray(b.get("valid", np.ones((b_quad.shape[0],), np.uint8)), dtype=np.uint8).copy()
+        b_conf = np.asarray(b.get("confidence", np.ones((b_quad.shape[0],), np.float32)), dtype=np.float32).copy()
 
-    s_quad = np.asarray(s["quad"], dtype=np.float32)
-    s_valid = np.asarray(s.get("valid", np.ones((s_quad.shape[0],), np.uint8)), dtype=np.uint8)
-    s_conf = np.asarray(s.get("confidence", np.ones((s_quad.shape[0],), np.float32)), dtype=np.float32)
+        s_quad = np.asarray(s["quad"], dtype=np.float32)
+        s_valid = np.asarray(s.get("valid", np.ones((s_quad.shape[0],), np.uint8)), dtype=np.uint8)
+        s_conf = np.asarray(s.get("confidence", np.ones((s_quad.shape[0],), np.float32)), dtype=np.float32)
 
-    N = b_quad.shape[0]
-    M = s_quad.shape[0]
-    off = int(max(0, min(offset, N)))
-    m2 = int(min(M, N - off))
-    if m2 <= 0:
-        # nothing to do
-        np.savez_compressed(dst_npz, **{k: b[k] for k in b.files})
-        return
+        N = b_quad.shape[0]
+        M = s_quad.shape[0]
+        off = int(max(0, min(offset, N)))
+        m2 = int(min(M, N - off))
+        if m2 <= 0:
+            # nothing to do
+            np.savez_compressed(dst_npz, **{k: b[k] for k in b.files})
+            return
 
-    b_quad[off:off + m2] = s_quad[:m2]
-    b_valid[off:off + m2] = s_valid[:m2]
-    b_conf[off:off + m2] = s_conf[:m2]
+        b_quad[off:off + m2] = s_quad[:m2]
+        b_valid[off:off + m2] = s_valid[:m2]
+        b_conf[off:off + m2] = s_conf[:m2]
 
-    out = {}
-    for k in b.files:
-        if k == "quad":
-            out[k] = b_quad.astype(np.float32)
-        elif k == "valid":
-            out[k] = b_valid.astype(np.uint8)
-        elif k == "confidence":
-            out[k] = b_conf.astype(np.float32)
-        else:
-            out[k] = b[k]
-    np.savez_compressed(dst_npz, **out)
+        out = {}
+        for k in b.files:
+            if k == "quad":
+                out[k] = b_quad.astype(np.float32)
+            elif k == "valid":
+                out[k] = b_valid.astype(np.uint8)
+            elif k == "confidence":
+                out[k] = b_conf.astype(np.float32)
+            else:
+                out[k] = b[k]
+        np.savez_compressed(dst_npz, **out)
 
 
 def _segment_repair(video: str, detector_py: str, best_npz: str,
@@ -378,11 +377,11 @@ def _segment_repair(video: str, detector_py: str, best_npz: str,
     Try to patch bad segments by re-running detector on extracted subvideos.
     Return path to repaired npz if improved, else None.
     """
-    npz = np.load(best_npz, allow_pickle=False)
-    quads = np.asarray(npz["quad"], dtype=np.float32)
-    N = int(quads.shape[0])
-    valid = np.asarray(npz.get("valid", np.ones((N,), np.uint8)), dtype=np.uint8) > 0
-    conf = np.asarray(npz.get("confidence", np.ones((N,), np.float32)), dtype=np.float32)
+    with np.load(best_npz, allow_pickle=False) as npz:
+        quads = np.asarray(npz["quad"], dtype=np.float32)
+        N = int(quads.shape[0])
+        valid = np.asarray(npz.get("valid", np.ones((N,), np.uint8)), dtype=np.uint8) > 0
+        conf = np.asarray(npz.get("confidence", np.ones((N,), np.float32)), dtype=np.float32)
 
     segs = _find_bad_segments(valid, conf, bad_conf_thr=bad_conf_thr, max_len=bad_max_len, min_len=2)
     if not segs:
@@ -871,9 +870,11 @@ def main() -> int:
         # Optional: segment repair (patch bad runs without full rerun)
         if args.segment_repair:
             # quick bad-frame fraction check
-            npz = np.load(best_path, allow_pickle=False)
-            valid = np.asarray(npz.get("valid", np.ones((npz["quad"].shape[0],), np.uint8)), dtype=np.uint8) > 0
-            conf = np.asarray(npz.get("confidence", np.ones((npz["quad"].shape[0],), np.float32)), dtype=np.float32)
+            # with: Windows cannot remove an open file, so the temp folder (and the
+            # candidate track in it) would be left behind by shutil.rmtree below.
+            with np.load(best_path, allow_pickle=False) as npz:
+                valid = np.asarray(npz.get("valid", np.ones((npz["quad"].shape[0],), np.uint8)), dtype=np.uint8) > 0
+                conf = np.asarray(npz.get("confidence", np.ones((npz["quad"].shape[0],), np.float32)), dtype=np.float32)
             bad = (~valid) | (conf < float(args.bad_conf_thr))
             frac = float(bad.mean()) if len(bad) else 1.0
             if frac <= float(args.bad_max_frac):
