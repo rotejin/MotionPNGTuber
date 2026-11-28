@@ -259,5 +259,88 @@ class PinnedCheckpointHashTests(unittest.TestCase):
             self.assertRegex(value, r"^[0-9a-f]{64}$", name)
 
 
+class _FrameCountOverride:
+    """A real VideoCapture whose CAP_PROP_FRAME_COUNT says something else."""
+
+    def __init__(self, cap, frame_count, *, readable=True) -> None:
+        self._cap = cap
+        self._frame_count = frame_count
+        self._readable = readable
+
+    def get(self, prop):
+        import cv2
+
+        if prop == cv2.CAP_PROP_FRAME_COUNT:
+            return float(self._frame_count)
+        return self._cap.get(prop)
+
+    def read(self):
+        return self._cap.read() if self._readable else (False, None)
+
+    def __getattr__(self, name):
+        return getattr(self._cap, name)
+
+
+class FrameCountTests(unittest.TestCase):
+    """The track has one entry per frame actually read, whatever the video header says.
+
+    Before, the header's count decided the length: 0 saved an empty track and exited 0,
+    a larger number left zero quads at the end, a smaller one dropped frames, and the
+    garbage value of a raw stream crashed np.zeros.
+    """
+
+    N = 23
+
+    def setUp(self) -> None:
+        import cv2
+
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.dir = Path(tmp.name)
+        self.video = str(self.dir / "clip.mp4")
+        writer = cv2.VideoWriter(self.video, cv2.VideoWriter_fourcc(*"mp4v"), 24.0, (64, 48))
+        self.assertTrue(writer.isOpened())
+        for _ in range(self.N):
+            writer.write(np.full((48, 64, 3), 128, np.uint8))
+        writer.release()
+
+    def run_detector(self, frame_count, *, readable=True):
+        import cv2
+
+        real_capture = cv2.VideoCapture
+        out = str(self.dir / "mouth_track.npz")
+        argv = ["face_track_anime_detector.py", "--video", self.video, "--out", out, "--device", "cpu"]
+        with (
+            mock.patch.object(face_track_anime_detector, "HAS_ANIME_DETECTOR", True),
+            mock.patch.object(face_track_anime_detector, "create_detector_with_fallback",
+                              return_value=(object(), "cpu")),
+            mock.patch.object(face_track_anime_detector, "run_detector_with_runtime_fallback",
+                              side_effect=lambda detector, frame, model, current_device: ([], detector, current_device)),
+            mock.patch.object(face_track_anime_detector.cv2, "VideoCapture",
+                              side_effect=lambda path: _FrameCountOverride(real_capture(path), frame_count,
+                                                                           readable=readable)),
+            mock.patch.object(face_track_anime_detector.sys, "argv", argv),
+            mock.patch("builtins.print"),
+        ):
+            rc = face_track_anime_detector.main()
+        return rc, out
+
+    def test_track_length_follows_the_frames_read(self):
+        for header in (self.N, 0, self.N + 40, self.N - 9, -230584300921369):
+            with self.subTest(header=header):
+                rc, out = self.run_detector(header)
+                self.assertEqual(rc, 0)
+                with np.load(out, allow_pickle=False) as npz:
+                    self.assertEqual(npz["quad"].shape, (self.N, 4, 2))
+                    self.assertEqual(npz["valid"].shape, (self.N,))
+                    self.assertEqual(npz["confidence"].shape, (self.N,))
+                Path(out).unlink()
+
+    def test_no_readable_frame_is_an_error(self):
+        rc, out = self.run_detector(self.N, readable=False)
+        self.assertEqual(rc, 1)
+        self.assertFalse(Path(out).exists())
+
+
 if __name__ == "__main__":
     unittest.main()

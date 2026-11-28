@@ -608,9 +608,10 @@ def main() -> int:
             ("mask_inner.png", inner_u8),
             ("mask_ring.png", ring_u8),
         ):
-            out_path = os.path.join(args.debug, name)
-            if not write_image_file(out_path, image):
-                raise RuntimeError(f"Failed to save debug image: {out_path}")
+            # Not out_path: that is the output video.
+            debug_path = os.path.join(args.debug, name)
+            if not write_image_file(debug_path, image):
+                raise RuntimeError(f"Failed to save debug image: {debug_path}")
 
     # Prepare writer (silent)
     mux_audio = bool(args.keep_audio)
@@ -726,9 +727,9 @@ def main() -> int:
             q = quad.astype(np.int32).reshape(4, 2)
             cv2.polylines(dbg, [q], True, (0, 255, 0), 2, cv2.LINE_AA)
             cv2.putText(dbg, f"{i}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 255, 255), 2)
-            out_path = os.path.join(args.debug, f"frame_{i:06d}.png")
-            if not write_image_file(out_path, dbg):
-                raise RuntimeError(f"Failed to save debug frame: {out_path}")
+            debug_path = os.path.join(args.debug, f"frame_{i:06d}.png")
+            if not write_image_file(debug_path, dbg):
+                raise RuntimeError(f"Failed to save debug frame: {debug_path}")
 
         writer.write(frame)
 
@@ -773,56 +774,55 @@ def main() -> int:
                 pass
         print(f"[info] wrote: {out_path}")
 
-        # Internal metrics (always computed; only saved when --debug is set)
-        valid_rate = float(track.valid[:n_out].mean()) if n_out > 0 else 0.0
-        if valid_rate < 0.80:
-            print(f"[warn] track valid_rate is low ({valid_rate:.2f}). "
-                  f"Erase quality may degrade; try improving tracking settings.")
+    # Internal metrics (always computed; only saved when --debug is set)
+    valid_rate = float(track.valid[:n_out].mean()) if n_out > 0 else 0.0
+    if valid_rate < 0.80:
+        print(f"[warn] track valid_rate is low ({valid_rate:.2f}). "
+              f"Erase quality may degrade; try improving tracking settings.")
 
-        if args.debug:
-            payload = {
-                "video": os.path.abspath(args.video),
-                "track": os.path.abspath(track_path),
-                "out": os.path.abspath(out_path),
-                "n_frames": int(n_out),
-                "valid_rate": valid_rate,
-                "params": {
-                    "valid_policy": str(args.valid_policy),
-                    "norm_w": int(norm_w),
-                    "norm_h": int(norm_h),
-                    "oversample": float(args.oversample),
-                    "coverage": float(args.coverage),
-                    "ring": int(args.ring),
-                    "dilate": int(args.dilate),
-                    "feather": int(args.feather),
-                    "shading": str(args.shading),
-                },
-            }
-            try:
-                save_debug_metrics(args.debug, payload, track.valid[:n_out].astype(np.uint8))
-                print(f"[debug] metrics: {os.path.join(args.debug, 'metrics.json')}")
-            except Exception as e:
-                print(f"[warn] failed to write debug metrics: {e}")
+    if args.debug:
+        payload = {
+            "video": os.path.abspath(args.video),
+            "track": os.path.abspath(track_path),
+            "out": os.path.abspath(out_path),
+            "n_frames": int(n_out),
+            "valid_rate": valid_rate,
+            "params": {
+                "valid_policy": str(args.valid_policy),
+                "norm_w": int(norm_w),
+                "norm_h": int(norm_h),
+                "oversample": float(args.oversample),
+                "coverage": float(args.coverage),
+                "ring": int(args.ring),
+                "dilate": int(args.dilate),
+                "feather": int(args.feather),
+                "shading": str(args.shading),
+            },
+        }
+        try:
+            save_debug_metrics(args.debug, payload, track.valid[:n_out].astype(np.uint8))
+            print(f"[debug] metrics: {os.path.join(args.debug, 'metrics.json')}")
+        except Exception as e:
+            print(f"[warn] failed to write debug metrics: {e}")
 
-        # Profiling output (dev-only)
-        if profiler is not None:
-            try:
-                import io
-                import pstats
-                profiler.disable()
-                s = io.StringIO()
-                ps = pstats.Stats(profiler, stream=s).sort_stats("cumulative")
-                ps.print_stats(30)
-                out_txt = s.getvalue()
-                if getattr(args, "profile_out", ""):
-                    os.makedirs(os.path.dirname(os.path.abspath(args.profile_out)) or ".", exist_ok=True)
-                    with open(args.profile_out, "w", encoding="utf-8") as f:
-                        f.write(out_txt)
-                else:
-                    print(out_txt)
-            except Exception as e:
-                print(f"[warn] profile output failed: {e}")
-
+    # Profiling output (dev-only)
+    if profiler is not None:
+        try:
+            import io
+            import pstats
+            profiler.disable()
+            s = io.StringIO()
+            ps = pstats.Stats(profiler, stream=s).sort_stats("cumulative")
+            ps.print_stats(30)
+            out_txt = s.getvalue()
+            if getattr(args, "profile_out", ""):
+                os.makedirs(os.path.dirname(os.path.abspath(args.profile_out)) or ".", exist_ok=True)
+                with open(args.profile_out, "w", encoding="utf-8") as f:
+                    f.write(out_txt)
+            else:
+                print(out_txt)
+        except Exception as e:
+            print(f"[warn] profile output failed: {e}")
 
     return 0
 

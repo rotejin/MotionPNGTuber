@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import itertools
 import os
 import json
 import shutil
@@ -933,7 +934,9 @@ def main() -> int:
     fps = float(cap.get(cv2.CAP_PROP_FPS) or 24.0)
     vid_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     vid_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    n_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+    # The header's frame count can be missing, approximate or garbage (raw streams):
+    # it is only a hint here. The frames actually read decide the length of the track.
+    n_frames = max(0, int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0))
 
     print(f"[info] video: {vid_w}x{vid_h} @ {fps:.2f}fps, {n_frames} frames")
 
@@ -967,10 +970,11 @@ def main() -> int:
     if stride != 1:
         print(f"[info] detection stride: {stride} (process every {stride} frames)")
 
-    # 出力配列
-    quads = np.zeros((n_frames, 4, 2), dtype=np.float32)
-    valid = np.zeros((n_frames,), dtype=np.uint8)
-    confidences = np.zeros((n_frames,), dtype=np.float32)
+    # 出力配列（足りなくなったら広げ、最後に読めたフレームの数に切り詰める）
+    capacity = n_frames if n_frames > 0 else 1024
+    quads = np.zeros((capacity, 4, 2), dtype=np.float32)
+    valid = np.zeros((capacity,), dtype=np.uint8)
+    confidences = np.zeros((capacity,), dtype=np.float32)
 
     # デバッグライター
     debug_writer = None
@@ -986,6 +990,7 @@ def main() -> int:
             debug_writer = None
 
     det_count = 0
+    n_read = 0
     print("[info] processing frames...")
     # Progress (TTY only; no new CLI flags)
     use_tqdm = sys.stderr.isatty()
@@ -993,9 +998,9 @@ def main() -> int:
         from tqdm import tqdm  # type: ignore
     except Exception:
         tqdm = None  # type: ignore
-    it = range(n_frames)
+    it = itertools.count()
     if use_tqdm and tqdm is not None:
-        it = tqdm(it, total=n_frames, desc="Tracking", unit="frame", dynamic_ncols=True)
+        it = tqdm(it, total=n_frames or None, desc="Tracking", unit="frame", dynamic_ncols=True)
 
     last_selected_bbox: np.ndarray | None = None
 
@@ -1003,6 +1008,13 @@ def main() -> int:
         ok, frame = cap.read()
         if not ok:
             break
+        n_read = i + 1
+        if i >= len(valid):
+            # The header said fewer frames than the video has.
+            grow = len(valid)
+            quads = np.concatenate([quads, np.zeros((grow, 4, 2), dtype=np.float32)])
+            valid = np.concatenate([valid, np.zeros((grow,), dtype=np.uint8)])
+            confidences = np.concatenate([confidences, np.zeros((grow,), dtype=np.float32)])
 
         # anime-face-detector で検出 (stride対応)
         # 戻り値: [{'bbox': [x1,y1,x2,y2,conf], 'keypoints': (28,3)}, ...]
@@ -1116,6 +1128,16 @@ def main() -> int:
     cap.release()
     if debug_writer is not None:
         debug_writer.release()
+    if n_read == 0:
+        print(f"[error] 動画のフレームを 1 枚も読めませんでした / no frames could be read: {args.video}")
+        return 1
+    if n_read != n_frames:
+        if n_frames > 0:
+            print(f"[warn] the video header says {n_frames} frames, but {n_read} were read; using {n_read}")
+        n_frames = n_read
+    quads = quads[:n_read]
+    valid = valid[:n_read]
+    confidences = confidences[:n_read]
     # ---- post process ----
     # NOTE: valid は『検出に成功した生のフレーム』を表す。平滑化しても上書きしない。
     valid_raw = valid.copy()
