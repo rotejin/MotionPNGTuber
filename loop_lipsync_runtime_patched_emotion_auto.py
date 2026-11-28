@@ -1444,11 +1444,14 @@ def _user_specified_paths(argv: list[str], args) -> bool:
     """True if the command line chose the video, the mouth folder or the tracks.
 
     Then the last GUI session must not replace them. ``--loop-video=clip.mp4`` (one
-    token) and abbreviations such as ``--loop-vid`` count too: argparse accepts both,
-    and the paths all default to "".
+    token) and abbreviations such as ``--loop-vid`` or ``--tuber-n`` count too: argparse
+    accepts an abbreviation only when it names one option, so after parsing, an option
+    that begins one of the path flags is that flag. The paths also all default to "".
     """
-    if any(tok.split("=", 1)[0] in _PATH_FLAGS for tok in argv):
-        return True
+    for tok in argv:
+        name = tok.split("=", 1)[0]
+        if len(name) > 2 and name.startswith("--") and any(flag.startswith(name) for flag in _PATH_FLAGS):
+            return True
     return any(
         getattr(args, name, "")
         for name in ("loop_video", "assets_dir", "mouth_dir", "track", "track_calibrated")

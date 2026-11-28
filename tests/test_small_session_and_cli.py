@@ -64,6 +64,8 @@ class RuntimePathArgumentTests(unittest.TestCase):
             (["--loop-vid", "clip.mp4"], self.args(loop_video="clip.mp4")),  # argparse abbreviation
             (["--mouth-dir=mouth"], self.args(mouth_dir="mouth")),
             (["--tuber-num=11"], self.args()),
+            (["--tuber-n", "11"], self.args()),  # abbreviation of an option that is not a path
+            (["--loop", "clip.mp4"], self.args(loop_video="clip.mp4")),
         ]
         for argv, args in cases:
             with self.subTest(argv=argv):
@@ -72,6 +74,22 @@ class RuntimePathArgumentTests(unittest.TestCase):
     def test_other_options_are_not_paths(self):
         self.assertFalse(runtime._user_specified_paths([], self.args()))
         self.assertFalse(runtime._user_specified_paths(["--device", "3", "--emotion-auto"], self.args()))
+        self.assertFalse(runtime._user_specified_paths(["--mouth-brightness", "5", "--"], self.args()))
+
+    def test_parse_args_with_an_abbreviated_tuber_num(self):
+        with tempfile.TemporaryDirectory() as td:
+            session_video = os.path.join(td, "session.mp4")
+            with open(session_video, "wb"):
+                pass
+            with (
+                mock.patch.object(runtime.sys, "argv", ["runtime", "--tuber-n", "11"]),
+                mock.patch.object(runtime, "load_last_session", return_value={"video": session_video}),
+                mock.patch("builtins.print"),
+            ):
+                args = runtime.parse_args()
+        self.assertEqual(args.tuber_num, 11)
+        # The number chooses assets/assets11/; the last session's video must not replace it.
+        self.assertEqual(args.loop_video, os.path.join("assets", "assets11", "loop.mp4"))
 
     def test_the_last_session_does_not_replace_a_video_given_with_equals(self):
         with tempfile.TemporaryDirectory() as td:
