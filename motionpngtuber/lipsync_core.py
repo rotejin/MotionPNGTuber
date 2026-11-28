@@ -18,7 +18,7 @@ from collections import deque
 
 import cv2
 import numpy as np
-from PIL import Image
+from PIL import Image, UnidentifiedImageError
 
 
 # ============================================================
@@ -31,9 +31,17 @@ def one_pole_beta(cutoff_hz: float, update_hz: int) -> float:
 
 
 def load_rgba(path: str) -> np.ndarray:
-    """Load image as RGBA numpy array."""
-    im = Image.open(path).convert("RGBA")
-    return np.array(im, dtype=np.uint8)
+    """Load a PNG image as an RGBA numpy array.
+
+    Only the PNG decoder is used. Pillow otherwise picks the decoder from the
+    file contents, so a file named ``*.png`` from someone else could reach the
+    TIFF, JPEG or other decoders (see .github/SECURITY.md).
+    """
+    try:
+        with Image.open(path, formats=["PNG"]) as im:
+            return np.array(im.convert("RGBA"), dtype=np.uint8)
+    except UnidentifiedImageError as e:
+        raise ValueError(f"mouth sprite is not a PNG file: {path}") from e
 
 
 def open_video_capture(path: str, retries: int = 25, delay_sec: float = 0.08) -> cv2.VideoCapture:

@@ -1,7 +1,12 @@
+import hashlib
+import tempfile
 import unittest
+from pathlib import Path
+from unittest import mock
 
 import numpy as np
 
+import face_track_anime_detector
 from face_track_anime_detector import (
     build_device_try_order,
     create_detector_with_fallback,
@@ -10,6 +15,7 @@ from face_track_anime_detector import (
     mouth_quad_from_landmarks,
     run_detector_with_runtime_fallback,
     select_target_prediction,
+    verify_detector_checkpoints,
 )
 
 
@@ -156,12 +162,15 @@ class DeviceFallbackTests(unittest.TestCase):
                 raise RuntimeError("sm_120 is not compatible")
             return {"device": device}
 
-        with unittest.mock.patch("face_track_anime_detector.create_detector", side_effect=fake_create):
+        # create=True: anime-face-detector is not installed in the light CI environment.
+        with mock.patch("face_track_anime_detector.create_detector", side_effect=fake_create, create=True), \
+                mock.patch("face_track_anime_detector.verify_detector_checkpoints") as verify:
             detector, used_device = create_detector_with_fallback("yolov3", "auto")
 
         self.assertEqual(detector["device"], "cpu")
         self.assertEqual(used_device, "cpu")
         self.assertEqual(calls, [("yolov3", "cuda:0"), ("yolov3", "cpu")])
+        verify.assert_called_once_with("yolov3")
 
     def test_run_detector_with_runtime_fallback_retries_current_frame_on_cpu(self):
         frame = np.zeros((8, 8, 3), dtype=np.uint8)
@@ -188,6 +197,66 @@ class DeviceFallbackTests(unittest.TestCase):
         self.assertEqual(used_device, "cpu")
         self.assertEqual(len(preds), 1)
         self.assertIsInstance(detector, CpuDetector)
+
+
+class CheckpointVerificationTests(unittest.TestCase):
+    """The weights are read with torch.load, so only the published files may be used."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.files = {}
+        hashes = {}
+        for name in ("yolov3", "hrnetv2"):
+            path = Path(self.tmp.name) / f"{name}.pth"
+            path.write_bytes(f"weights of {name}".encode())
+            self.files[name] = path
+            hashes[name] = hashlib.sha256(path.read_bytes()).hexdigest()
+        self.get_path = mock.Mock(side_effect=lambda name: self.files[name])
+        for patcher in (
+            mock.patch.object(face_track_anime_detector, "DETECTOR_CHECKPOINT_SHA256", hashes),
+            mock.patch.object(face_track_anime_detector, "_verified_checkpoints", set()),
+            mock.patch("face_track_anime_detector.get_checkpoint_path", self.get_path, create=True),
+        ):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def test_published_files_pass_and_are_checked_once(self):
+        verify_detector_checkpoints("yolov3")
+        verify_detector_checkpoints("yolov3")
+
+        self.assertEqual([c.args[0] for c in self.get_path.call_args_list], ["yolov3", "hrnetv2"])
+
+    def test_changed_file_is_refused(self):
+        self.files["hrnetv2"].write_bytes(b"something else")
+
+        with self.assertRaises(RuntimeError) as ctx:
+            verify_detector_checkpoints("yolov3")
+
+        self.assertIn(str(self.files["hrnetv2"]), str(ctx.exception))
+        self.assertIn("Delete this file", str(ctx.exception))
+
+    def test_model_without_a_known_hash_is_refused(self):
+        with self.assertRaises(RuntimeError):
+            verify_detector_checkpoints("faster-rcnn")
+
+    def test_detector_is_not_created_from_a_changed_file(self):
+        self.files["yolov3"].write_bytes(b"something else")
+        create = mock.Mock()
+
+        with mock.patch("face_track_anime_detector.create_detector", create, create=True):
+            with self.assertRaises(RuntimeError):
+                create_detector_with_fallback("yolov3", "auto")
+
+        create.assert_not_called()
+
+
+class PinnedCheckpointHashTests(unittest.TestCase):
+    def test_both_models_the_tool_uses_have_a_sha256(self):
+        pinned = face_track_anime_detector.DETECTOR_CHECKPOINT_SHA256
+        self.assertEqual(set(pinned), {"yolov3", face_track_anime_detector.LANDMARK_MODEL})
+        for name, value in pinned.items():
+            self.assertRegex(value, r"^[0-9a-f]{64}$", name)
 
 
 if __name__ == "__main__":
