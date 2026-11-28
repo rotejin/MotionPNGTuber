@@ -7,7 +7,11 @@ Notable changes are recorded here. For earlier updates, see the update table at 
 
 ### 修正 / Fixed
 
+- ライブ実行中の「色なじみ自動補正」を、少し時間をおいてもう一度押すと、ライブの画面が止まり（見本の 1080p の動画で、60 秒後なら約 10 秒）、GUI は 5 秒で失敗と出していた。間の全部のフレームを順に読んでいたため。今は、プレビューに出ているフレームへ 1 回シークして読む（約 0.1 秒）。1 回目も、プレビューと違う先頭のフレームで推定していたのを、出ているフレームにした。
+- 「色なじみ自動補正」を押すたびに、補正の値が揺れていた（補正済みの口の色から推定し、その値を補正前の口に当て直していたため）。今は補正前の口の色から推定するので、同じ場面なら何度押しても同じ値になる。
 - 「② 口消し動画生成」の後に「mouthフォルダを選択」で口の素材を選び直すと、背景の動画が口消し動画から元の動画に戻り、「③ ライブ実行」で口が二重になっていた。今は、口のフォルダを選んでも背景の口消し動画はそのまま残る（動画の欄を別の動画に書き換えていた時だけ、新しい動画として扱う）。
+
+Pressing the live "auto mouth colour" button again after a while froze the live window (about 10 seconds a minute later, with the bundled 1080p sample) and the GUI gave up after 5 seconds: every frame in between was decoded. It now seeks to the frame shown in the preview (about 0.1 s), which the first press also uses instead of the first frame of the video. The result also changed every time the button was pressed, because the colour was measured on the already adjusted mouth and then applied to the original one; it is now measured on the original mouth, so the same scene gives the same values.
 
 Choosing the mouth folder again after "② 口消し動画生成" switched the background back from the mouthless video to the original one, so "③ ライブ実行" showed two mouths. Choosing the mouth folder now keeps the mouthless background (unless the video field was changed to a different video).
 

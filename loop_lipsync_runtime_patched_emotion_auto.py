@@ -25,6 +25,7 @@ import threading
 import time
 import queue
 from dataclasses import dataclass
+from typing import Callable
 
 try:
     import tkinter as tk
@@ -410,6 +411,68 @@ def _compose_mouth_patch(
         "y0": y0,
         "quad": quad,
     }
+
+
+def _estimate_auto_color_for_request(
+    *,
+    mouth_sets_original: dict[str, dict[str, np.ndarray]],
+    current_emotion: str,
+    mouth_shape: str,
+    current_cfg: MouthColorAdjust,
+    fixed_x: int,
+    fixed_y: int,
+    preview_frame: np.ndarray,
+    preview_frame_idx: int,
+    preview_track: MouthTrack | None,
+    preview_scale: float,
+    full_frame_source: Callable[[int], tuple[np.ndarray, int, MouthTrack | None] | None] | None = None,
+) -> tuple[dict | None, str]:
+    """Estimate the auto mouth colour for the frame shown in the preview.
+
+    The mouth colour is sampled from the original sprites, before any colour
+    adjustment: the estimate is absolute and is applied to the original sprites
+    again (_rebuild_runtime_mouth_color_sets), so sampling the adjusted sprites
+    would give a different value every time the button is pressed.
+
+    ``full_frame_source(frame_idx)`` returns ``(frame_rgb, frame_idx, track)`` at
+    full resolution for that frame, or None. When it is missing or fails, the
+    preview frame is used. Returns ``(estimate or None, "full" or "preview")``.
+    """
+    _emotion, original_set = _select_runtime_mouth_view(mouth_sets_original, current_emotion)
+    if full_frame_source is not None:
+        try:
+            full = full_frame_source(int(preview_frame_idx))
+            if full is not None:
+                frame_full, full_idx, track_full = full
+                full_meta = _compose_mouth_patch(
+                    original_set, mouth_shape, full_idx, track_full, 1.0, fixed_x, fixed_y,
+                )
+                estimated = _estimate_auto_color_result(
+                    frame_full,
+                    np.asarray(full_meta["patch"]),
+                    x0=int(full_meta["x0"]),
+                    y0=int(full_meta["y0"]),
+                    current_cfg=current_cfg,
+                )
+                if estimated is not None:
+                    return estimated, "full"
+            print("[auto-color warn] full-resolution sampling failed; fallback to preview")
+        except Exception as e:
+            print(
+                "[auto-color warn] full-resolution sampling unavailable; "
+                f"fallback to preview ({e})"
+            )
+    meta = _compose_mouth_patch(
+        original_set, mouth_shape, int(preview_frame_idx), preview_track, preview_scale, fixed_x, fixed_y,
+    )
+    estimated = _estimate_auto_color_result(
+        preview_frame,
+        np.asarray(meta["patch"]),
+        x0=int(meta["x0"]),
+        y0=int(meta["y0"]),
+        current_cfg=current_cfg,
+    )
+    return estimated, "preview"
 
 
 def start_emotion_selector_gui(
@@ -964,6 +1027,20 @@ def run(args) -> None:
             track_full_auto = MouthTrack.load(track_path, full_w, full_h, policy=args.valid_policy)
         return vid_full_auto, track_full_auto
 
+    def _full_auto_frame(frame_idx: int, now: float) -> tuple[np.ndarray, int, MouthTrack | None] | None:
+        """The frame shown in the preview, at full resolution, for the auto colour."""
+        full_video, full_track_src = _ensure_full_auto_sources()
+        if full_video is None:
+            return None
+        if full_video is vid_full:
+            # The virtual camera plays this video every frame; take its current frame.
+            return full_video.get_frame(now).copy(), full_video.frame_idx, full_track_src
+        # Only used here: seek to the frame instead of playing every frame since the last request.
+        frame = full_video.read_frame_at(frame_idx)
+        if frame is None:
+            return None
+        return frame, int(frame_idx), full_track_src
+
     # ---- audio feature buffers ----
     # Use queue.Queue instead of lock+deque to avoid blocking in audio callback.
     # This prevents potential audio glitches caused by lock contention.
@@ -1292,7 +1369,7 @@ def run(args) -> None:
                 # ---- preview ----
                 frp_base = vid_prev.get_frame(now).copy()
                 frp = frp_base.copy()
-                draw_meta = draw_one(frp, vid_prev.frame_idx, track_prev, args.preview_scale)
+                draw_one(frp, vid_prev.frame_idx, track_prev, args.preview_scale)
 
                 if auto_request_path and auto_result_path and (now - auto_request_last_check) >= 0.15:
                     auto_request_last_check = now
@@ -1305,49 +1382,19 @@ def run(args) -> None:
                         request_id, _requested_at = req
                         if request_id and request_id != auto_request_last_id:
                             auto_request_last_id = request_id
-                            estimated = None
-                            estimated_source = "preview"
-                            full_sampling_error = False
-                            try:
-                                full_video, full_track_src = _ensure_full_auto_sources()
-                                if full_video is not None:
-                                    fr_full = full_video.get_frame(now).copy()
-                                    full_meta = _compose_mouth_patch(
-                                        mouth,
-                                        mouth_shape_now,
-                                        full_video.frame_idx,
-                                        full_track_src,
-                                        1.0,
-                                        int(args.mouth_fixed_x),
-                                        int(args.mouth_fixed_y),
-                                    )
-                                    estimated = _estimate_auto_color_result(
-                                        fr_full,
-                                        np.asarray(full_meta["patch"]),
-                                        x0=int(full_meta["x0"]),
-                                        y0=int(full_meta["y0"]),
-                                        current_cfg=mouth_color_cfg,
-                                    )
-                                    if estimated is not None:
-                                        estimated_source = "full"
-                            except Exception as e:
-                                print(
-                                    "[auto-color warn] full-resolution sampling unavailable; "
-                                    f"fallback to preview ({e})"
-                                )
-                                estimated = None
-                                full_sampling_error = True
-                            if estimated is None:
-                                if not full_sampling_error:
-                                    print("[auto-color warn] full-resolution sampling failed; fallback to preview")
-                                estimated = _estimate_auto_color_result(
-                                    frp_base,
-                                    np.asarray(draw_meta["patch"]),
-                                    x0=int(draw_meta["x0"]),
-                                    y0=int(draw_meta["y0"]),
-                                    current_cfg=mouth_color_cfg,
-                                )
-                                estimated_source = "preview"
+                            estimated, estimated_source = _estimate_auto_color_for_request(
+                                mouth_sets_original=mouth_sets_original,
+                                current_emotion=current_emotion,
+                                mouth_shape=mouth_shape_now,
+                                current_cfg=mouth_color_cfg,
+                                fixed_x=int(args.mouth_fixed_x),
+                                fixed_y=int(args.mouth_fixed_y),
+                                preview_frame=frp_base,
+                                preview_frame_idx=vid_prev.frame_idx,
+                                preview_track=track_prev,
+                                preview_scale=args.preview_scale,
+                                full_frame_source=lambda idx: _full_auto_frame(idx, now),
+                            )
                             if estimated is None:
                                 result_payload = {
                                     "session_token": ipc_token,

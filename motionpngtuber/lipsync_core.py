@@ -547,6 +547,10 @@ class BgVideo:
         if self.total_frames:
             self.frame_idx %= self.total_frames
 
+        return self._to_output(bgr)
+
+    def _to_output(self, bgr: np.ndarray) -> np.ndarray:
+        """Scale a decoded frame to the output size and convert it to RGB."""
         if self.scale_mode == "fill":
             # scale-to-fill + center-crop
             if bgr.shape[1] != self._fill_rw or bgr.shape[0] != self._fill_rh:
@@ -572,6 +576,26 @@ class BgVideo:
                 if fr is not None:
                     self._cached = fr
         assert self._cached is not None
+        return self._cached
+
+    def read_frame_at(self, frame_idx: int) -> np.ndarray | None:
+        """Seek to one frame and return it (scaled, RGB), or None if it cannot be read.
+
+        For reading a single frame on request, such as the frame shown in the
+        preview. ``get_frame`` plays the video: called again after a long pause,
+        it decodes every frame in between (minutes of video at once). A seek only
+        decodes from the key frame before ``frame_idx``. Do not mix the two on
+        the same object.
+        """
+        idx = max(0, int(frame_idx))
+        if self.total_frames:
+            idx %= self.total_frames
+        self.cap.set(cv2.CAP_PROP_POS_FRAMES, float(idx))
+        ret, bgr = self.cap.read()
+        if not ret or bgr is None:
+            return None
+        self.frame_idx = idx
+        self._cached = self._to_output(bgr)
         return self._cached
 
     def reset(self) -> None:
