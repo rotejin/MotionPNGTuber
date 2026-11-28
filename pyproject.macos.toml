@@ -36,7 +36,7 @@
 [project]
 name = "motionpngtuber"
 version = "0.1.0"
-description = "Add your description here"
+description = "動画ループで髪揺れなどを表現できる、リアルタイム口パクツール（PNGTuber以上Live2D未満）"
 readme = "README.md"
 requires-python = "==3.10.*"
 dependencies = [

@@ -50,6 +50,9 @@
   - [口PNG色味補正](#-口png色味補正)
 - [詳細リファレンス](#-詳細リファレンス)
 - [テスト](#-テスト)
+- [サポート・開発への参加](#-サポート開発への参加)
+- [関連リポジトリ](#-関連リポジトリ)
+- [ライセンス](#-ライセンス)
 
 ---
 
@@ -78,6 +81,8 @@ uv run python mouth_track_gui.py
 ```
 
 > 📝 古い記事では `assets01` / `assets03` が使われていることがありますが、現在の `main` のサンプルは `assets/asmr_tomari/` です。
+>
+> ⚠️ 同梱のサンプル（妹尾トマリ。`assets/asmr_tomari/`・`mouth_dir/Tomari/`）は、ツールを試すための見本で、**MIT License の対象外**です。試している様子を SNS に載せるのは OK（非営利）ですが、自分のアバターとして使うことや、ほかへの流用はできません。詳しくは [ASSETS.md](ASSETS.md)。
 
 ---
 
@@ -444,12 +449,14 @@ mouthフォルダがまだ無いなら、先にこっちで作るのがおすす
 - `*_mouthless_h264.mp4` は `ffmpeg` がある環境でのブラウザ / Player 利用に向いています
 - `ffmpeg` が無い場合でも GUI は `mouth_track.json` を出力し、H.264 変換をスキップしたことをログに出します
 
-**MotionPNGTuber_Player** のように **AudioWorklet** を使う実装では、`file://` で直接開くとマイクや worklet 読み込みが制限される場合があります。その場合はローカルサーバー経由で開いてください。
+**[MotionPNGTuber_Player](https://github.com/rotejin/MotionPNGTuber_Player)** のように **AudioWorklet** を使う実装では、`file://` で直接開くとマイクや worklet 読み込みが制限される場合があります。その場合はローカルサーバー経由で開いてください。
 
 ```bash
-python -m http.server 8000
-# その後 http://localhost:8000 を開く
+python -m http.server 8000 --bind 127.0.0.1
+# その後 http://127.0.0.1:8000 を開く
 ```
+
+`--bind 127.0.0.1` を付けると、自分の PC からだけ開けます（付けないと、同じネットワークのほかの機器からも中身が見えます）。
 
 </details>
 
@@ -517,8 +524,10 @@ MotionPNGTuber/
 │   └── workflow_validation.py                      #   ワークフロー検証
 ├── convert_npz_to_json.py                          # npz→JSON変換
 ├── tests/                                          # テストスイート
-├── assets/                                         # サンプル素材
-├── mouth_dir/                                      # 口スプライト（サンプル）
+├── tools/audit.py                                  # 依存の脆弱性の検査（CI でも使う）
+├── assets/                                         # サンプル素材（MIT 対象外。ASSETS.md）
+├── mouth_dir/                                      # 口スプライト（サンプル。MIT 対象外）
+├── ASSETS.md                                       # サンプル素材の利用条件
 ├── pyproject.toml                                  # 依存関係（Windows / Linux）
 └── pyproject.macos.toml                            # 依存関係（macOS）
 ```
@@ -600,13 +609,29 @@ uv run python -m unittest discover -s tests -p "test_e2e_smoke.py" -v
 `python -m unittest discover` だけだと **0 tests** になることがあります。
 `-s tests` を付けたコマンドを使ってください。
 
-2026-04-13 時点: **261 tests / 3 skip** で通る状態を確認しています。
+2026-11-28 時点: **274 tests / 1 skip** で通る状態を確認しています（GitHub Actions でも、Windows と Ubuntu で自動で確かめています）。
+
+---
+
+## 🤝 サポート・開発への参加
+
+- 質問・不具合の報告: [サポートの案内](.github/SUPPORT.md)
+- 脆弱性の報告: [セキュリティポリシー](.github/SECURITY.md)
+- 開発への参加: [CONTRIBUTING](.github/CONTRIBUTING.md)
+- 変更の記録: [CHANGELOG.md](CHANGELOG.md)
+
+## 🔗 関連リポジトリ
+
+- [MotionPNGTuber_Player](https://github.com/rotejin/MotionPNGTuber_Player) — 書き出した `mouth_track.json` と口消し動画を、ブラウザで口パクさせるプレイヤー
+- [MotionPNGTuber_Avatars](https://github.com/rotejin/MotionPNGTuber_Avatars) — プレイヤーですぐ使えるアバター素材集
 
 ---
 
 ## 📄 ライセンス
 
-MIT License
+ソースコード・スクリプト・文書は [MIT License](LICENSE) です。
+
+同梱のキャラクター素材（妹尾トマリ。`assets/asmr_tomari/`・`mouth_dir/Tomari/`）は **MIT License の対象外**です。ツールを試すことと、試している様子の非営利の SNS 投稿はできますが、自分のアバターとしての利用・流用・再配布・営利での利用はできません。詳しくは [ASSETS.md](ASSETS.md) を参照してください。
 
 ## 🙏 謝辞
 
