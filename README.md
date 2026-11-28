@@ -61,7 +61,7 @@ By using looping video, you can achieve rich expressions like **hair swaying** a
 
 ### Requirements
 
-- Python 3.10
+- Python 3.10 (the face detector's packages support only 3.10). Python 3.10 reached its end of life in October 2026, so use the newest 3.10 release. python.org's last Windows installer for 3.10 is 3.10.11, so installing it with `uv python install 3.10` is recommended (if you have a `.venv` made with an older 3.10, delete it and run `uv sync` again)
 - uv (package manager)
   - Windows: `powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"`
   - macOS / Linux: `curl -LsSf https://astral.sh/uv/install.sh | sh`
@@ -96,7 +96,7 @@ uv run python mouth_track_gui.py
 
 #### 1. Prerequisites
 
-- [Python 3.10](https://www.python.org/downloads/) (check "Add Python to PATH" during installation)
+- The newest Python 3.10 (`uv python install 3.10`; python.org's Windows installer for 3.10 is the old, unsupported 3.10.11, so do not use it)
 - uv:
   ```powershell
   powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
@@ -191,7 +191,7 @@ uv pip install mmdet==2.28.0 mmpose==0.29.0
 #### 1. Prerequisites
 
 - Ubuntu 22.04 LTS
-- Python 3.10
+- The newest Python 3.10 (`uv python install 3.10`)
 - NVIDIA GPU / CUDA 11.7 compatible environment recommended
 
 #### 2. Install uv
