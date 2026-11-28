@@ -9,7 +9,64 @@ from unittest import mock
 
 import numpy as np
 
+import auto_mouth_track_v2
 from auto_mouth_track_v2 import Metrics, _segment_repair, build_arg_parser
+
+
+class TempFolderCleanupTests(unittest.TestCase):
+    """main() removes its temp folder, also on Windows (an open .npz cannot be removed there).
+
+    The GUI runs this script for every analysis, with segment repair on by default, and
+    the best candidate's track used to stay open until main() returned, so
+    %TEMP%\\auto_mouth_track_*\\cand_*.npz was left behind every time.
+    """
+
+    def test_main_removes_its_temp_folder(self):
+        with tempfile.TemporaryDirectory() as td:
+            video = os.path.join(td, "clip.mp4")
+            detector = os.path.join(td, "detector.py")
+            out = os.path.join(td, "mouth_track.npz")
+            for path in (video, detector):
+                with open(path, "wb"):
+                    pass
+            created = []
+            real_mkdtemp = tempfile.mkdtemp
+
+            def recording_mkdtemp(*args, **kwargs):
+                kwargs["dir"] = td
+                path = real_mkdtemp(*args, **kwargs)
+                created.append(path)
+                return path
+
+            def fake_detector(_detector_py, args_map):
+                n = 40
+                quad = np.tile(np.array([[10, 10], [30, 10], [30, 20], [10, 20]], np.float32), (n, 1, 1))
+                valid = np.ones(n, np.uint8)
+                valid[5] = 0  # a short bad run, so that segment repair looks at the track
+                np.savez_compressed(
+                    args_map["--out"], quad=quad, valid=valid,
+                    confidence=np.full(n, 0.9, np.float32), w=np.int32(64), h=np.int32(64),
+                )
+                return 0
+
+            argv = ["auto_mouth_track_v2.py", "--video", video, "--out", out, "--detector", detector,
+                    "--early-stop", "--max-tries", "4"]
+            with (
+                mock.patch.object(auto_mouth_track_v2.sys, "argv", argv),
+                mock.patch.object(auto_mouth_track_v2.tempfile, "mkdtemp", side_effect=recording_mkdtemp),
+                mock.patch.object(auto_mouth_track_v2, "get_video_info", return_value=(25.0, 40)),
+                mock.patch.object(auto_mouth_track_v2, "run_detector", side_effect=fake_detector),
+                mock.patch.object(auto_mouth_track_v2, "_segment_repair", return_value=None),
+                mock.patch("builtins.print"),
+            ):
+                rc = auto_mouth_track_v2.main()
+
+            self.assertEqual(rc, 0)
+            self.assertTrue(os.path.isfile(out))
+            self.assertTrue(created)
+            for path in created:
+                if os.path.exists(path):
+                    self.fail(f"temp folder left behind: {os.listdir(path)}")
 
 
 class SegmentRepairTests(unittest.TestCase):

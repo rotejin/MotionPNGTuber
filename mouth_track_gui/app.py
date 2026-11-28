@@ -234,6 +234,44 @@ class App(tk.Tk):
         self.after(0, self._fit_initial_window)
         self.after(100, self._poll_logs)
 
+        self._closing = False
+        self.protocol("WM_DELETE_WINDOW", self._on_close_window)
+
+    # ----- closing -----
+    def _on_close_window(self) -> None:
+        """窓の「×」: 実行中の処理を止め、ライブ用の一時フォルダを消してから閉じる。
+
+        そのまま閉じると、ワーカー（daemon）が途中で消えて後始末（finally）が走らない。
+        子のプロセス（ライブの窓とマイク・解析など）は数分残り、一時フォルダはずっと残る。
+        """
+        if self._closing:
+            return
+        worker = self.worker_thread
+        if worker is not None and worker.is_alive() and not messagebox.askyesno(
+            "終了", "処理の実行中です。止めて終了しますか？", parent=self,
+        ):
+            return
+        self._closing = True
+        self.withdraw()
+        self.stop_flag.set()
+        self.runner.force_stop()
+        self._cancel_auto_color_poll()
+        self._close_when_worker_done(time.monotonic() + 3.0)
+
+    def _close_when_worker_done(self, deadline: float) -> None:
+        """ワーカーの後始末が終わるまで（最大 3 秒）待ってから閉じる。
+
+        メインスレッドで join すると mainloop が止まり、ワーカーからの after() が
+        失敗するので、after() で待つ。
+        """
+        worker = self.worker_thread
+        if worker is not None and worker.is_alive() and time.monotonic() < deadline:
+            self.runner.force_stop()  # 止めた後に次のコマンドが始まっていても止める
+            self.after(50, lambda: self._close_when_worker_done(deadline))
+            return
+        self._cleanup_live_ipc_session()
+        self.destroy()
+
     # ----- UI -----
     def _build_ui(self) -> WidgetRefs:
         ui_vars = UiVars(
@@ -1210,7 +1248,7 @@ class App(tk.Tk):
             if cap.isOpened():
                 win = "preview (q/ESC=close, space=pause)"
                 paused = False
-                while True:
+                while not self.stop_flag.is_set():  # 窓を閉じた時も止まる
                     if not paused:
                         ok, frame = cap.read()
                         if not ok:
@@ -1638,7 +1676,12 @@ class App(tk.Tk):
 
 def main() -> None:
     app = App()
-    app.mainloop()
+    try:
+        app.mainloop()
+    finally:
+        # 例外（コンソールの Ctrl+C など）で抜けた時も、子のプロセスと一時フォルダを残さない
+        app.runner.force_stop()
+        app._cleanup_live_ipc_session()
 
 
 if __name__ == "__main__":
