@@ -4,7 +4,7 @@
 
 uv audit が見つけた脆弱性のうち、「直る版が、このアプリの制約では入れられない」物
 だけを除き、それ以外が 1 つでもあれば失敗します。除く理由は .github/SECURITY.md の
-「直せない既知の脆弱性」に書いてあります（.github/dependabot.yml の ignore と同じ理由）。
+「直せない既知の脆弱性」に書いてあります（.github/dependabot.yml のコメントと同じ理由）。
 
 Checks the locked dependencies with uv audit. Only vulnerabilities whose fixed
 versions this project cannot install are left out (see .github/SECURITY.md);

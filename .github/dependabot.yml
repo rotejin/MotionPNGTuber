@@ -6,30 +6,18 @@ updates:
       interval: "weekly"
     open-pull-requests-limit: 5
 
-  - package-ecosystem: "uv"
-    directory: "/"
-    schedule:
-      interval: "weekly"
-    open-pull-requests-limit: 5
-    # 顔検出（anime-face-detector 0.0.9）は mmcv-full 1.7.0 + torch 1.13.1 + Python 3.10 でしか動かない。
-    # 上げると動かなくなる物は提案させない（理由は .github/SECURITY.md・tools/audit.py と同じ）。
-    # The face detector only works with mmcv-full 1.7.0 + torch 1.13.1 + Python 3.10.
-    ignore:
-      - dependency-name: "anime-face-detector"
-      - dependency-name: "mmcv-full"
-      - dependency-name: "mmdet"
-      - dependency-name: "mmpose"
-      - dependency-name: "torch"
-      - dependency-name: "torchvision"
-      # torch 1.13.1 は起動時に pkg_resources.packaging を使う。setuptools 70 で無くなった。
-      - dependency-name: "setuptools"
-        versions: [">=70"]
-      # torch 1.13 は NumPy 2 に対応していない。
-      - dependency-name: "numpy"
-        versions: [">=2"]
-      # opencv-python 4.12 以上は NumPy 2 が要る。
-      - dependency-name: "opencv-python"
-        versions: [">=4.12"]
-      # Pillow 13 以上は Python 3.11 以上が要る。
-      - dependency-name: "pillow"
-        versions: [">=13"]
+# Python の依存（uv）の自動更新は使わない。Dependabot は uv.lock を作り直す時に
+# mmcv-full の配布物（download.openmmlab.com）を取りに行けず、毎回失敗するため
+# （private_source_authentication_failure）。代わりに、CI（.github/workflows/ci.yml）が
+# 毎週 tools/audit.py で、直せる脆弱性が無いかを調べる。脆弱性のアラートは今までどおり届く。
+#
+# Python dependency updates (uv) are not used: Dependabot cannot fetch the
+# mmcv-full wheel from download.openmmlab.com when it re-locks, so every run fails.
+# CI runs tools/audit.py every week instead; vulnerability alerts still arrive.
+#
+# 上げると動かなくなる物（手で更新するときの注意。理由は .github/SECURITY.md と tools/audit.py）:
+# - anime-face-detector・mmcv-full・mmdet・mmpose・torch・torchvision: 顔検出の組み合わせに固定
+# - setuptools 70 以上: torch 1.13.1 が起動時に使う pkg_resources.packaging が無い
+# - numpy 2 以上: torch 1.13 が対応していない
+# - opencv-python 4.12 以上: NumPy 2 が要る
+# - pillow 13 以上: Python 3.11 以上が要る

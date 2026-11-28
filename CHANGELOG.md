@@ -18,9 +18,9 @@ Notable changes are recorded here. For earlier updates, see the update table at 
 - 同梱のサンプル（妹尾トマリ）が MIT License の対象外であることと、その利用条件を [ASSETS.md](ASSETS.md) に書いた。
 - e2e のテストが、リポジトリに無いサンプルを見ていて、ずっと飛ばされていたのを直した。
 - 改行を LF にそろえた（`.gitattributes`・`.editorconfig`）。
-- セキュリティポリシー・サポートの案内・開発への参加の案内・Issue と Pull Request のテンプレート・CI（Windows と Ubuntu でのテスト、依存の脆弱性の検査、依存が変わった時の全部入りの検査）・Dependabot を足した。
+- セキュリティポリシー・サポートの案内・開発への参加の案内・Issue と Pull Request のテンプレート・CI（Windows と Ubuntu でのテスト、依存の脆弱性の検査、依存が変わった時の全部入りの検査。テストと脆弱性の検査は毎週も走る）・Dependabot（GitHub Actions の更新）を足した。Python の依存は、Dependabot が mmcv-full の配布物を取りに行けず更新できないため、毎週の CI で調べる。
 
-Fixed the vulnerable dependencies (Pillow 12.3.0, urllib3 2.8.0, requests 2.34.2, certifi, idna, pip, Pygments). Mouth images are decoded as PNG only, and the face detector weights are checked by SHA-256 before `torch.load` reads them. The known vulnerabilities that cannot be fixed here (torch 1.13.1, Pillow 12.3.0, setuptools 69.5.1) are explained in SECURITY.md. The README starts its local web server with `--bind 127.0.0.1`. The bundled sample character (Tomari) is not covered by the MIT License; see ASSETS.md. Fixed the e2e tests that were always skipped, normalized line endings to LF, and added the security policy, support and contributing guides, issue and pull request templates, CI and Dependabot.
+Fixed the vulnerable dependencies (Pillow 12.3.0, urllib3 2.8.0, requests 2.34.2, certifi, idna, pip, Pygments). Mouth images are decoded as PNG only, and the face detector weights are checked by SHA-256 before `torch.load` reads them. The known vulnerabilities that cannot be fixed here (torch 1.13.1, Pillow 12.3.0, setuptools 69.5.1) are explained in SECURITY.md. The README starts its local web server with `--bind 127.0.0.1`. The bundled sample character (Tomari) is not covered by the MIT License; see ASSETS.md. Fixed the e2e tests that were always skipped, normalized line endings to LF, and added the security policy, support and contributing guides, issue and pull request templates, CI (also run every week) and Dependabot for GitHub Actions. Dependabot cannot update the Python dependencies here (it cannot fetch the mmcv-full wheel), so the weekly CI checks them instead.
 
 ## v0.1.1 - 2026-04-10
 
