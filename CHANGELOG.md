@@ -3,7 +3,7 @@
 このリポジトリの主な変更を記録します。それより前の細かい更新は、README の「更新情報」を見てください。
 Notable changes are recorded here. For earlier updates, see the update table at the top of the README.
 
-## 未公開 / Unreleased
+## v0.1.2 - 2026-11-28
 
 ### セキュリティ / Security
 
