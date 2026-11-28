@@ -96,7 +96,7 @@ uv run python mouth_track_gui.py
 
 #### 1. 前提条件
 
-- Python 3.10 の一番新しい版（`uv python install 3.10` で入ります。[python.org](https://www.python.org/downloads/) から入れる時は、インストール時に「Add Python to PATH」にチェック）
+- Python 3.10 の一番新しい版（`uv python install 3.10` で入ります。python.org の Windows 用のインストーラーは 3.10.11 で古く、サポートも終わっているので使いません）
 - uv:
   ```powershell
   powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"

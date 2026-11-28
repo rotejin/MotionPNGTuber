@@ -96,7 +96,7 @@ uv run python mouth_track_gui.py
 
 #### 1. Prerequisites
 
-- The newest Python 3.10 (`uv python install 3.10`; when installing from [python.org](https://www.python.org/downloads/), check "Add Python to PATH")
+- The newest Python 3.10 (`uv python install 3.10`; python.org's Windows installer for 3.10 is the old, unsupported 3.10.11, so do not use it)
 - uv:
   ```powershell
   powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
