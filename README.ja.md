@@ -61,7 +61,7 @@
 
 ### 必要なもの
 
-- Python 3.10
+- Python 3.10（顔検出の部品が 3.10 にしか対応していません）。3.10 は 2026 年 10 月にサポートが終わったので、3.10 の中で一番新しい版を使ってください。python.org の Windows 用のインストーラーは 3.10.11 が最後なので、`uv python install 3.10` で入れるのがおすすめです（古い 3.10 で作った `.venv` があれば、消してから `uv sync`）
 - uv（パッケージマネージャー）
   - Windows: `powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"`
   - macOS / Linux: `curl -LsSf https://astral.sh/uv/install.sh | sh`
@@ -96,7 +96,7 @@ uv run python mouth_track_gui.py
 
 #### 1. 前提条件
 
-- [Python 3.10](https://www.python.org/downloads/)（インストール時に「Add Python to PATH」にチェック）
+- Python 3.10 の一番新しい版（`uv python install 3.10` で入ります。[python.org](https://www.python.org/downloads/) から入れる時は、インストール時に「Add Python to PATH」にチェック）
 - uv:
   ```powershell
   powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
@@ -191,7 +191,7 @@ uv pip install mmdet==2.28.0 mmpose==0.29.0
 #### 1. 前提条件
 
 - Ubuntu 22.04 LTS
-- Python 3.10
+- Python 3.10 の一番新しい版（`uv python install 3.10`）
 - NVIDIA GPU / CUDA 11.7 系推奨
 
 #### 2. uvのインストール

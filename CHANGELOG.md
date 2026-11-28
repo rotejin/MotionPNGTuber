@@ -11,6 +11,12 @@ Notable changes are recorded here. For earlier updates, see the update table at 
 
 Choosing the mouth folder again after "② 口消し動画生成" switched the background back from the mouthless video to the original one, so "③ ライブ実行" showed two mouths. Choosing the mouth folder now keeps the mouthless background (unless the video field was changed to a different video).
 
+### そのほか / Other
+
+- README と [SECURITY.md](.github/SECURITY.md) に、Python 3.10 のサポートが 2026 年 10 月に終わったことと、顔検出のために 3.10 から上げられないので 3.10 の一番新しい版を使うこと（Windows では `uv python install 3.10`。python.org の Windows 用のインストーラーは 3.10.11 が最後）を書いた。
+
+The README and SECURITY.md now say that Python 3.10 reached its end of life in October 2026, and that the newest 3.10 release should be used because the face detector cannot move to a newer Python (on Windows `uv python install 3.10`, as python.org's last 3.10 installer for Windows is 3.10.11).
+
 ## v0.1.2 - 2026-11-28
 
 ### セキュリティ / Security
