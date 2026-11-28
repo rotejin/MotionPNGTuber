@@ -36,7 +36,7 @@ from dataclasses import dataclass
 import cv2
 import numpy as np
 
-from motionpngtuber.image_io import read_image_bgra
+from motionpngtuber.image_io import read_png_rgba
 from motionpngtuber.mouth_color_adjust import (
     MouthColorAdjust,
     apply_inspect_boost_3ch,
@@ -53,10 +53,11 @@ ARROW_DOWN = 2621440
 
 
 def load_bgra(path: str) -> np.ndarray:
-    img_bgra = read_image_bgra(path)
-    if img_bgra is None:
-        raise FileNotFoundError(path)
-    return img_bgra
+    """Read the mouth sprite as 8-bit BGRA, with the PNG decoder only.
+
+    Raises FileNotFoundError if the file is missing and ValueError if it is not a PNG.
+    """
+    return cv2.cvtColor(read_png_rgba(path), cv2.COLOR_RGBA2BGRA)
 
 
 def warp_sprite_to_quad(src_sprite_4ch: np.ndarray, dst_quad: np.ndarray, out_w: int, out_h: int) -> np.ndarray:

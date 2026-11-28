@@ -478,7 +478,9 @@ def run_erase_range_preview(
         if open_sprite and os.path.isfile(open_sprite):
             try:
                 sprite_bgra = read_image_bgra(open_sprite)
-                if sprite_bgra is not None and color_adjust is not None:
+                if sprite_bgra is None:
+                    log_fn(f"[warn] open.png を PNG として読めないため、口PNG重ね表示なしで続行します: {open_sprite}")
+                elif color_adjust is not None:
                     sprite_bgra = apply_mouth_color_adjust_4ch(
                         sprite_bgra,
                         color_adjust,
