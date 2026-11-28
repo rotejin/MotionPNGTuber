@@ -115,6 +115,16 @@ SOFT_STOP_GRACE_SEC = 3.0
 STOP_BTN_TEXT_SOFT = "停止予約中（もう一度で強制停止）"
 MAX_LOG_LINES = 200  # ログ表示の上限行数
 
+
+def _same_video_path(a: object, b: object) -> bool:
+    """同じ動画を指しているか（区切り文字・大文字小文字・相対パスの違いは同じとみなす）。"""
+    a_text = str(a or "").strip()
+    b_text = str(b or "").strip()
+    if not a_text or not b_text:
+        return a_text == b_text
+    return os.path.normcase(os.path.abspath(a_text)) == os.path.normcase(os.path.abspath(b_text))
+
+
 # ---------- GUI ----------
 class App(tk.Tk):
     def __init__(self) -> None:
@@ -1018,9 +1028,7 @@ class App(tk.Tk):
             return
         self.mouth_dir_var.set(d)
         self._refresh_characters(init=True)
-        self._save_session({
-            "video": self.video_var.get(),
-            "source_video": self.video_var.get(),
+        payload = {
             "mouth_dir": self.mouth_dir_var.get(),
             "coverage": float(self.coverage_var.get()),
             "pad": float(self.pad_var.get()),
@@ -1029,7 +1037,17 @@ class App(tk.Tk):
             "character": self.character_var.get(),
             "emotion_preset": self.emotion_preset_var.get(),
             "emotion_hud": bool(self.emotion_hud_var.get()),
-        })
+        }
+        # session の video は背景用（② の後は口消し動画）、source_video は元の動画。
+        # 口のフォルダを選んだだけで video を元の動画に戻すと、③ が口の残った動画で動き、口が二重になる。
+        # 動画の欄が別の動画に書き換えられていた時だけ、新しい動画として両方を保存する
+        # （その動画の口消し動画はまだ無い）。
+        sess = load_session()
+        current_video = self.video_var.get()
+        if not _same_video_path(sess.get("source_video", sess.get("video", "")), current_video):
+            payload["video"] = current_video
+            payload["source_video"] = current_video
+        self._save_session(payload)
 
     def on_stop(self) -> None:
         if self.stop_mode == "none":
