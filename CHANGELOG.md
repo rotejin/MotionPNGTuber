@@ -7,8 +7,12 @@ Notable changes are recorded here. For earlier updates, see the update table at 
 
 ### セキュリティ / Security
 
+- キャリブレーションと「見た目確認（軽量）」も、口の画像を PNG としてだけ読むようにした。今までは OpenCV が中身から形式を選んでいて、`.png` という名前の TIFF・JPEG・WebP などもそのまま読んでいた（ライブ実行は v0.1.2 から PNG だけ）。グレースケール・パレット・16-bit の PNG は、どの画面でも同じ 8-bit の色で読む（16-bit のグレースケールは、今まで真っ白になっていた）。
+- [SECURITY.md](.github/SECURITY.md) の「ほかに起動する物」に、Windows の `taskkill`（停止の時）と、口消し動画の確認に OS の既定のアプリで開くことを書き足した。
 - 依存の脆弱性の検査（`tools/audit.py`。CI で毎週と変更のたびに走る）が、torch の新しい報告と、Pillow・setuptools の「直る版がまだ無い」報告を、読まずに除いていた。今は、影響を確かめた報告の ID（今の 70 件・106 の ID。`uv audit` の内容を 1 件ずつ読み、このアプリの使い方では届かないことを確かめた）だけを除き、新しい報告は確かめて ID を足すまで失敗する。直る版を入れられるようになった報告も失敗する。
 - [SECURITY.md](.github/SECURITY.md) に、`opencv-python` が NumPy 2 の制約で 4.11 のままであることと、OpenCV・Pillow が中に持つライブラリ（FFmpeg・libpng など）の穴は `uv audit` では見えないことを書いた。
+
+The calibration and the lightweight preview now read mouth images with the PNG decoder only, as the live runtime does since v0.1.2; before, OpenCV picked the decoder from the contents and also read TIFF, JPEG, WebP and other files named `.png`. Grayscale, palette and 16-bit PNGs are read with the same 8-bit colours everywhere (16-bit grayscale used to become white). SECURITY.md now also lists `taskkill` on Windows and opening the finished video with the default app.
 
 The dependency check (`tools/audit.py`, run by CI every week and on every change) left out every new torch advisory and every Pillow or setuptools advisory without a fixed version, without anybody reading them. It now leaves out only the advisories whose impact has been checked (70 advisories, 106 ids, each read and found unreachable in this app); a new advisory fails the check until it is reviewed and added, and so does an advisory whose fix becomes installable. SECURITY.md now also explains that opencv-python stays at 4.11 because of NumPy 2, and that `uv audit` cannot see vulnerabilities in the libraries bundled inside OpenCV and Pillow.
 
