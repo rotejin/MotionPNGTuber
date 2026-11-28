@@ -5,6 +5,13 @@ Notable changes are recorded here. For earlier updates, see the update table at 
 
 ## Unreleased
 
+### セキュリティ / Security
+
+- キャリブレーションと「見た目確認（軽量）」も、口の画像を PNG としてだけ読むようにした。今までは OpenCV が中身から形式を選んでいて、`.png` という名前の TIFF・JPEG・WebP などもそのまま読んでいた（ライブ実行は v0.1.2 から PNG だけ）。グレースケール・パレット・16-bit の PNG は、どの画面でも同じ 8-bit の色で読む（16-bit のグレースケールは、今まで真っ白になっていた）。
+- [SECURITY.md](.github/SECURITY.md) の「ほかに起動する物」に、Windows の `taskkill`（停止の時）と、口消し動画の確認に OS の既定のアプリで開くことを書き足した。
+
+The calibration and the lightweight preview now read mouth images with the PNG decoder only, as the live runtime does since v0.1.2; before, OpenCV picked the decoder from the contents and also read TIFF, JPEG, WebP and other files named `.png`. Grayscale, palette and 16-bit PNGs are read with the same 8-bit colours everywhere (16-bit grayscale used to become white). SECURITY.md now also lists `taskkill` on Windows and opening the finished video with the default app.
+
 ### 修正 / Fixed
 
 - 「② 口消し動画生成」の後に「mouthフォルダを選択」で口の素材を選び直すと、背景の動画が口消し動画から元の動画に戻り、「③ ライブ実行」で口が二重になっていた。今は、口のフォルダを選んでも背景の口消し動画はそのまま残る（動画の欄を別の動画に書き換えていた時だけ、新しい動画として扱う）。
