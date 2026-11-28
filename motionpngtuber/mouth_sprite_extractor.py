@@ -460,6 +460,12 @@ def compute_unified_size(
 # Main extractor class
 # ---------------------------------------------------------------------------
 
+def _tail_lines(*texts: str, limit: int = 20) -> str:
+    """The last ``limit`` non-empty lines of the given outputs, for an error message."""
+    lines = [line for text in texts for line in (text or "").splitlines() if line.strip()]
+    return "\n".join(lines[-limit:]) or "(no output)"
+
+
 class MouthSpriteExtractor:
     """口スプライト抽出器"""
     
@@ -538,9 +544,21 @@ class MouthSpriteExtractor:
         if callback:
             callback("Running face detector...")
         
-        result = subprocess.run(cmd, capture_output=True, text=True)
+        # The detector prints its messages (for example how to get the weights again
+        # after a SHA-256 mismatch) to stdout, and tracebacks to stderr: show both.
+        # UTF-8 on both sides, as mouth_track_gui/runner.py does, so that Japanese
+        # messages survive on any Windows code page.
+        env = os.environ.copy()
+        env["PYTHONUTF8"] = "1"
+        env["PYTHONIOENCODING"] = "utf-8"
+        result = subprocess.run(
+            cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", env=env,
+        )
         if result.returncode != 0:
-            raise RuntimeError(f"Face detector failed: {result.stderr}")
+            raise RuntimeError(
+                f"Face detector failed (exit code {result.returncode}):\n"
+                + _tail_lines(result.stdout, result.stderr)
+            )
         
         return track_out
     

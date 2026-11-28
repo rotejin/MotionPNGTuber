@@ -331,6 +331,23 @@ def extract_sprite_with_crop(
     """
     # 正規化空間に変換
     patch_bgr = warp_frame_to_norm(frame_bgr, quad, unified_w, unified_h)
+    return sprite_from_patch(
+        patch_bgr, unified_w, unified_h,
+        crop_top, crop_bottom, crop_left, crop_right, feather_px,
+    )
+
+
+def sprite_from_patch(
+    patch_bgr: np.ndarray,
+    unified_w: int,
+    unified_h: int,
+    crop_top: int = 0,
+    crop_bottom: int = 0,
+    crop_left: int = 0,
+    crop_right: int = 0,
+    feather_px: int = 15,
+) -> np.ndarray:
+    """正規化空間の口パッチ（BGR）に、切り取り範囲とフェザーを適用してスプライト（RGBA）にする。"""
     patch_rgb = cv2.cvtColor(patch_bgr, cv2.COLOR_BGR2RGB)
     
     # 切り取り範囲を適用した楕円マスク
@@ -356,6 +373,30 @@ def extract_sprite_with_crop(
     rgba[:, :, 3] = (mask_f * 255).astype(np.uint8)
     
     return rgba
+
+
+def read_frames_in_order(cap: cv2.VideoCapture, frame_indices, *, max_forward: int = 48):
+    """Yield ``(frame_idx, frame_bgr)`` for the requested frames, in frame order.
+
+    A seek decodes from the key frame before the target, which can be the start of the
+    whole clip (some exports have a single key frame): seeking for each of 20 candidates
+    took 13 s on a 2160x3900 clip. Frames up to ``max_forward`` ahead are reached by
+    reading forward instead (``grab`` decodes without converting the image).
+    Frames that cannot be read are skipped.
+    """
+    pos = None
+    for idx in sorted({int(i) for i in frame_indices if int(i) >= 0}):
+        if pos is None or idx < pos or idx - pos > max_forward:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, float(idx))
+            pos = idx
+        while pos < idx and cap.grab():
+            pos += 1
+        if pos != idx:
+            continue
+        ok, frame = cap.read()
+        pos += 1
+        if ok and frame is not None:
+            yield idx, frame
 
 
 # ---------------------------------------------------------------------------
@@ -394,6 +435,8 @@ class MouthSpriteExtractorApp(tk.Tk if not _HAS_TK_DND else TkinterDnD.Tk):
         
         # Cached video capture for preview
         self._cached_cap: Optional[cv2.VideoCapture] = None
+        # 候補の口パッチ（正規化空間・BGR）。サムネイル・自動割り当て・プレビュー・自動切り抜きで使い回す
+        self._patch_cache: Dict[tuple, np.ndarray] = {}
         self._player_cap: Optional[cv2.VideoCapture] = None
         self.player_window: Optional[tk.Toplevel] = None
         self.live_test_window: Optional[tk.Toplevel] = None
@@ -1323,10 +1366,10 @@ class MouthSpriteExtractorApp(tk.Tk if not _HAS_TK_DND else TkinterDnD.Tk):
         except Exception as e:
             if raw_spec.startswith("pa:"):
                 try:
-                    self.log(f"[audio] ライブ試験 primary 解決失敗。default-source fallback を試します: {e}")
-                    resolution, apply_state, device_idx, samplerate = _resolve_live_input(
-                        prefer_default_source=True,
-                    )
+                    # 既定の入力（default-source）の切り替えはしない（ランタイムでは、利用者が
+                    # --linux-allow-default-source-switch で許した時だけ）。同じ条件でもう一度だけ試す。
+                    self.log(f"[audio] ライブ試験 入力デバイスの解決に失敗。もう一度試します: {e}")
+                    resolution, apply_state, device_idx, samplerate = _resolve_live_input()
                 except Exception as fallback_error:
                     cleanup_audio_device_resolution(resolution or {}, apply_state)
                     messagebox.showerror("エラー", f"入力デバイスを開けません: {fallback_error}")
@@ -1379,10 +1422,8 @@ class MouthSpriteExtractorApp(tk.Tk if not _HAS_TK_DND else TkinterDnD.Tk):
         except Exception as e:
             if raw_spec.startswith("pa:") and not bool((resolution or {}).get("needs_default_source_switch")):
                 try:
-                    self.log(f"[audio] ライブ試験 stream open 失敗。default-source fallback を試します: {e}")
-                    resolution, apply_state, device_idx, samplerate = _resolve_live_input(
-                        prefer_default_source=True,
-                    )
+                    self.log(f"[audio] ライブ試験 stream open 失敗。もう一度試します: {e}")
+                    resolution, apply_state, device_idx, samplerate = _resolve_live_input()
                     self._live_stream = sd.InputStream(  # type: ignore[union-attr]
                         samplerate=samplerate,
                         channels=1,
@@ -1901,6 +1942,7 @@ class MouthSpriteExtractorApp(tk.Tk if not _HAS_TK_DND else TkinterDnD.Tk):
         if self._cached_cap:
             self._cached_cap.release()
             self._cached_cap = None
+        self._patch_cache.clear()
         self._close_player_capture()
 
         self.player_current_frame_idx = 0
@@ -2014,40 +2056,44 @@ class MouthSpriteExtractorApp(tk.Tk if not _HAS_TK_DND else TkinterDnD.Tk):
             self.after(0, lambda: self.analyze_btn.configure(state=tk.NORMAL))
             self.after(0, self._refresh_workflow_state)
     
-    def _get_video_capture(self) -> cv2.VideoCapture:
-        """キャッシュされたVideoCaptureを取得"""
-        if self._cached_cap is None or not self._cached_cap.isOpened():
-            self._cached_cap = cv2.VideoCapture(self.video_path)
-        return self._cached_cap
-    
     def _generate_thumbnail_patches(self) -> List[Optional[np.ndarray]]:
-        """候補フレームのサムネイル用numpy配列を生成（ワーカースレッド用）"""
+        """候補フレームのサムネイル用numpy配列を生成"""
         if not self.candidate_frames or not self.unified_size:
             return []
+        return self._candidate_patches(self.candidate_frames)
 
-        # ワーカースレッドでは独自のVideoCaptureを使用（スレッドセーフ）
-        cap = cv2.VideoCapture(self.video_path)
-        if not cap.isOpened():
-            return []
+    def _candidate_patches(self, frames: List[MouthFrameInfo]) -> List[Optional[np.ndarray]]:
+        """各フレームの口パッチ（正規化空間・BGR）。読めないフレームは None。
 
+        サムネイル・自動割り当て・プレビュー・自動切り抜きは同じパッチを使うので、
+        覚えておいて使い回す（動画を選び直すと捨てる）。足りない分は、フレームの順に
+        まとめて読む（read_frames_in_order）。ワーカースレッドからも呼べる
+        （VideoCapture は呼ぶたびに作る）。
+        """
+        if not frames or not self.unified_size:
+            return [None] * len(frames)
         unified_w, unified_h = self.unified_size
-        patches = []
-
-        try:
-            for mf in self.candidate_frames:
-                cap.set(cv2.CAP_PROP_POS_FRAMES, float(mf.frame_idx))
-                ok, frame = cap.read()
-                if not ok or frame is None:
-                    patches.append(None)
-                    continue
-
-                # 正規化空間に変換（numpy配列のみ）
-                patch = warp_frame_to_norm(frame, mf.quad, unified_w, unified_h)
-                patches.append(patch)
-        finally:
-            cap.release()
-
-        return patches
+        keys = [
+            (self.video_path, int(mf.frame_idx), np.asarray(mf.quad, dtype=np.float32).tobytes(),
+             int(unified_w), int(unified_h))
+            for mf in frames
+        ]
+        missing: Dict[int, List[Tuple[tuple, MouthFrameInfo]]] = {}
+        for key, mf in zip(keys, frames):
+            if key not in self._patch_cache:
+                missing.setdefault(int(mf.frame_idx), []).append((key, mf))
+        if missing:
+            if len(self._patch_cache) > 512:
+                self._patch_cache.clear()
+            cap = cv2.VideoCapture(self.video_path)
+            try:
+                if cap.isOpened():
+                    for idx, frame in read_frames_in_order(cap, missing):
+                        for key, mf in missing[idx]:
+                            self._patch_cache[key] = warp_frame_to_norm(frame, mf.quad, unified_w, unified_h)
+            finally:
+                cap.release()
+        return [self._patch_cache.get(key) for key in keys]
 
     def _create_thumbnail_images(self):
         """numpy配列からPhotoImageを生成（UIスレッドで実行）"""
@@ -2152,14 +2198,8 @@ class MouthSpriteExtractorApp(tk.Tk if not _HAS_TK_DND else TkinterDnD.Tk):
             return
 
         self.log("口形の自動割り当て処理中...")
-        cap = cv2.VideoCapture(self.video_path)
-        if not cap.isOpened():
+        if not self._run_auto_assign_internal():
             messagebox.showerror("エラー", "動画を開けませんでした")
-            return
-        try:
-            self._run_auto_assign_internal(cap)
-        finally:
-            cap.release()
     
     def _on_update_preview(self):
         """プレビューを更新"""
@@ -2192,21 +2232,19 @@ class MouthSpriteExtractorApp(tk.Tk if not _HAS_TK_DND else TkinterDnD.Tk):
         feather_px = self.feather_var.get()
         
         unified_w, unified_h = self.unified_size
-        cap = self._get_video_capture()
+        assigned = list(assignments.items())
+        patches = self._candidate_patches([self.candidate_frames[cand_idx] for _name, cand_idx in assigned])
         
         self._clear_preview("empty")
         
-        for name, cand_idx in assignments.items():
+        for (name, cand_idx), patch in zip(assigned, patches):
             mf = self.candidate_frames[cand_idx]
-            
-            cap.set(cv2.CAP_PROP_POS_FRAMES, float(mf.frame_idx))
-            ok, frame = cap.read()
-            if not ok or frame is None:
+            if patch is None:
                 continue
             
             # スプライト抽出
-            rgba = extract_sprite_with_crop(
-                frame, mf.quad, unified_w, unified_h,
+            rgba = sprite_from_patch(
+                patch, unified_w, unified_h,
                 crop_top, crop_bottom, crop_left, crop_right, feather_px
             )
             self.preview_sprites[name] = rgba
@@ -2225,31 +2263,29 @@ class MouthSpriteExtractorApp(tk.Tk if not _HAS_TK_DND else TkinterDnD.Tk):
         self._update_live_test_preview(self._resolve_live_test_shape())
         self.log(f"プレビュー更新完了 ({len(self.preview_sprites)}枚)")
 
-    def _run_auto_assign_internal(self, cap: cv2.VideoCapture):
+    def _run_auto_assign_internal(self) -> bool:
         """
         自動割り当ての内部処理（ワーカースレッドから呼び出し可能）
 
-        Args:
-            cap: 開いているVideoCapture（呼び出し元で管理）
+        候補のパッチはサムネイルと同じ物を使い回す（_candidate_patches）。
+        候補のフレームを 1 つも読めなかった時は False を返す。
         """
         if not self.candidate_frames or not self.unified_size:
-            return
+            return True
 
         unified_w, unified_h = self.unified_size
+        patches = self._candidate_patches(self.candidate_frames)
+        if all(patch is None for patch in patches):
+            return False
 
         # 特徴量アナライザと分類器を初期化
         analyzer = MouthFeatureAnalyzer((unified_w, unified_h))
         classifier = MouthAutoClassifier()
 
         # 各候補フレームの特徴量を計算
-        for mf in self.candidate_frames:
-            cap.set(cv2.CAP_PROP_POS_FRAMES, float(mf.frame_idx))
-            ok, frame = cap.read()
-            if not ok or frame is None:
+        for mf, patch in zip(self.candidate_frames, patches):
+            if patch is None:
                 continue
-
-            # 正規化パッチを生成
-            patch = warp_frame_to_norm(frame, mf.quad, unified_w, unified_h)
 
             # 特徴量を抽出
             features = analyzer.analyze_frame(patch)
@@ -2266,7 +2302,7 @@ class MouthSpriteExtractorApp(tk.Tk if not _HAS_TK_DND else TkinterDnD.Tk):
 
         if not selected:
             self.log("警告: 有効なフレームが不足しています")
-            return
+            return True
 
         # 選択結果をUIに反映
         # 候補フレームのインデックスマップを作成
@@ -2283,6 +2319,7 @@ class MouthSpriteExtractorApp(tk.Tk if not _HAS_TK_DND else TkinterDnD.Tk):
                     self.log(f"  {type_name} -> 候補{cand_idx+1} (F:{frame_idx})")
 
         self.log("自動割り当て完了")
+        return True
 
     def _clear_assignments(self):
         """割り当て入力をクリア"""
@@ -2311,16 +2348,8 @@ class MouthSpriteExtractorApp(tk.Tk if not _HAS_TK_DND else TkinterDnD.Tk):
 
     def _auto_crop_worker(self):
         """自動切り抜きワーカースレッド"""
-        cap = None
         try:
             if not self.candidate_frames or not self.unified_size:
-                return
-
-            # ワーカースレッドでは独自のVideoCaptureを使用（スレッドセーフ）
-            cap = cv2.VideoCapture(self.video_path)
-            if not cap.isOpened():
-                self.log("エラー: 動画を開けませんでした")
-                self.after(0, lambda: self._finish_busy_state("自動切り抜きエラー"))
                 return
 
             unified_w, unified_h = self.unified_size
@@ -2328,20 +2357,9 @@ class MouthSpriteExtractorApp(tk.Tk if not _HAS_TK_DND else TkinterDnD.Tk):
             # 自動切り抜き推定器を初期化
             estimator = AutoCropEstimator((unified_w, unified_h))
 
-            # 有効なフレームのパッチを収集
-            patches = []
-            for mf in self.candidate_frames:
-                if not mf.valid:
-                    continue
-
-                cap.set(cv2.CAP_PROP_POS_FRAMES, float(mf.frame_idx))
-                ok, frame = cap.read()
-                if not ok or frame is None:
-                    continue
-
-                # 正規化パッチを生成
-                patch = warp_frame_to_norm(frame, mf.quad, unified_w, unified_h)
-                patches.append(patch)
+            # 有効なフレームのパッチを収集（サムネイルと同じ物を使い回す）
+            valid_frames = [mf for mf in self.candidate_frames if mf.valid]
+            patches = [patch for patch in self._candidate_patches(valid_frames) if patch is not None]
 
             if not patches:
                 self.log("警告: 有効なパッチがありません")
@@ -2370,8 +2388,6 @@ class MouthSpriteExtractorApp(tk.Tk if not _HAS_TK_DND else TkinterDnD.Tk):
             traceback.print_exc()
 
         finally:
-            if cap is not None:
-                cap.release()
             self.is_analyzing = False
             self.after(0, lambda: self.auto_crop_btn.configure(state=tk.NORMAL))
 
