@@ -3,6 +3,14 @@
 このリポジトリの主な変更を記録します。それより前の細かい更新は、README の「更新情報」を見てください。
 Notable changes are recorded here. For earlier updates, see the update table at the top of the README.
 
+## Unreleased
+
+### 修正 / Fixed
+
+- 「② 口消し動画生成」の後に「mouthフォルダを選択」で口の素材を選び直すと、背景の動画が口消し動画から元の動画に戻り、「③ ライブ実行」で口が二重になっていた。今は、口のフォルダを選んでも背景の口消し動画はそのまま残る（動画の欄を別の動画に書き換えていた時だけ、新しい動画として扱う）。
+
+Choosing the mouth folder again after "② 口消し動画生成" switched the background back from the mouthless video to the original one, so "③ ライブ実行" showed two mouths. Choosing the mouth folder now keeps the mouthless background (unless the video field was changed to a different video).
+
 ## v0.1.2 - 2026-11-28
 
 ### セキュリティ / Security

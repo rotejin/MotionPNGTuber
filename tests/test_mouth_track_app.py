@@ -270,5 +270,91 @@ class AppHelperRegressionTests(unittest.TestCase):
         self.assertIn("利用可能ファイル", joined)
 
 
+class PickMouthDirSessionTests(unittest.TestCase):
+    """mouth フォルダを選び直しても、背景の口消し動画（session の video）を元の動画に戻さない。
+
+    戻すと ③ ライブ実行が口の残った元の動画で動き、口が二重になる。
+    """
+
+    def setUp(self) -> None:
+        import mouth_track_gui.state as state
+
+        self.state = state
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        patcher = mock.patch.object(state, "LAST_SESSION_FILE", os.path.join(self.tmp.name, "session.json"))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.source = os.path.join(self.tmp.name, "clip.mp4")
+        self.mouthless = os.path.join(self.tmp.name, "clip_mouthless.mp4")
+        self.mouth_dir = os.path.join(self.tmp.name, "mouth")
+
+    def pick_mouth_dir(self, video: str) -> dict:
+        fake = SimpleNamespace(
+            video_var=DummyVar(video),
+            mouth_dir_var=DummyVar(""),
+            coverage_var=DummyVar(0.6),
+            pad_var=DummyVar(2.1),
+            audio_device_var=DummyVar(3),
+            audio_device_spec_var=DummyVar("sd:3"),
+            character_var=DummyVar("Default"),
+            emotion_preset_var=DummyVar("標準"),
+            emotion_hud_var=DummyVar(False),
+            _refresh_characters=mock.Mock(),
+            log=mock.Mock(),
+        )
+        fake._save_session = lambda payload: App._save_session(fake, payload)
+        with mock.patch("mouth_track_gui.app.filedialog.askdirectory", return_value=self.mouth_dir):
+            App.on_pick_mouth_dir(fake)
+        fake.log.assert_not_called()
+        return self.state.load_session()
+
+    def test_keeps_mouthless_background_after_erase_step(self):
+        # ② 口消し動画生成の後の session（video=口消し動画、source_video=元の動画）
+        self.state.save_session({"video": self.mouthless, "source_video": self.source})
+
+        sess = self.pick_mouth_dir(self.source)
+
+        self.assertEqual(sess["video"], self.mouthless)
+        self.assertEqual(sess["source_video"], self.source)
+        self.assertEqual(sess["mouth_dir"], self.mouth_dir)
+        self.assertEqual(sess["character"], "Default")
+
+    def test_new_video_typed_into_the_field_replaces_both(self):
+        # 動画の欄を別の動画に書き換えた後は、前の動画の口消し動画を背景に残さない
+        self.state.save_session({"video": self.mouthless, "source_video": self.source})
+        other = os.path.join(self.tmp.name, "other.mp4")
+
+        sess = self.pick_mouth_dir(other)
+
+        self.assertEqual(sess["video"], other)
+        self.assertEqual(sess["source_video"], other)
+        self.assertEqual(sess["mouth_dir"], self.mouth_dir)
+
+    def test_older_session_without_source_video_is_left_as_is(self):
+        # source_video が無い古い session は、GUI も video を元の動画として表示している
+        self.state.save_session({"video": self.source})
+
+        sess = self.pick_mouth_dir(self.source)
+
+        self.assertEqual(sess["video"], self.source)
+        self.assertNotIn("source_video", sess)
+
+    def test_empty_session_and_empty_video(self):
+        sess = self.pick_mouth_dir("")
+
+        self.assertEqual(sess["mouth_dir"], self.mouth_dir)
+        self.assertNotIn("video", sess)
+
+    def test_same_video_path(self):
+        from mouth_track_gui.app import _same_video_path
+
+        self.assertTrue(_same_video_path(self.source, os.path.abspath(self.source)))
+        self.assertTrue(_same_video_path(f"  {self.source}  ", self.source))
+        self.assertTrue(_same_video_path("", None))
+        self.assertFalse(_same_video_path("", self.source))
+        self.assertFalse(_same_video_path(self.source, self.mouthless))
+
+
 if __name__ == "__main__":
     unittest.main()
