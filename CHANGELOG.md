@@ -5,6 +5,13 @@ Notable changes are recorded here. For earlier updates, see the update table at 
 
 ## Unreleased
 
+### セキュリティ / Security
+
+- 依存の脆弱性の検査（`tools/audit.py`。CI で毎週と変更のたびに走る）が、torch の新しい報告と、Pillow・setuptools の「直る版がまだ無い」報告を、読まずに除いていた。今は、影響を確かめた報告の ID（今の 70 件・106 の ID。`uv audit` の内容を 1 件ずつ読み、このアプリの使い方では届かないことを確かめた）だけを除き、新しい報告は確かめて ID を足すまで失敗する。直る版を入れられるようになった報告も失敗する。
+- [SECURITY.md](.github/SECURITY.md) に、`opencv-python` が NumPy 2 の制約で 4.11 のままであることと、OpenCV・Pillow が中に持つライブラリ（FFmpeg・libpng など）の穴は `uv audit` では見えないことを書いた。
+
+The dependency check (`tools/audit.py`, run by CI every week and on every change) left out every new torch advisory and every Pillow or setuptools advisory without a fixed version, without anybody reading them. It now leaves out only the advisories whose impact has been checked (70 advisories, 106 ids, each read and found unreachable in this app); a new advisory fails the check until it is reviewed and added, and so does an advisory whose fix becomes installable. SECURITY.md now also explains that opencv-python stays at 4.11 because of NumPy 2, and that `uv audit` cannot see vulnerabilities in the libraries bundled inside OpenCV and Pillow.
+
 ### 修正 / Fixed
 
 - 「② 口消し動画生成」の後に「mouthフォルダを選択」で口の素材を選び直すと、背景の動画が口消し動画から元の動画に戻り、「③ ライブ実行」で口が二重になっていた。今は、口のフォルダを選んでも背景の口消し動画はそのまま残る（動画の欄を別の動画に書き換えていた時だけ、新しい動画として扱う）。
