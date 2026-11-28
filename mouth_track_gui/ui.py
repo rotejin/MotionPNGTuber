@@ -95,6 +95,22 @@ STOP_BTN_TEXT_DEFAULT = "中断（現在の処理が終わったら停止）"
 # UI builder
 # ---------------------------------------------------------------------------
 
+
+def bind_coverage_slider(var, label, save_session: Callable[[dict], object]) -> None:
+    """口消し範囲のスライダー: 値の表示を更新し、ほかのスライダーと同じく session に保存する。
+
+    今までは表示だけで保存しておらず、「キャリブのみ」「ライブ実行」だけをして閉じると、
+    次に開いた時に値が戻っていた（保存は動画・口フォルダの選択と ① ② の時だけだった）。
+    """
+
+    def _on_change(*_args) -> None:
+        value = float(var.get())
+        label.config(text=f"{value:.2f}")
+        save_session({"coverage": value})
+
+    var.trace_add("write", _on_change)
+
+
 def build_ui(
     parent: tk.Tk,
     vars: UiVars,
@@ -267,7 +283,7 @@ def build_ui(
     )
     cov_label = ttk.Label(row3, text=f"{vars.coverage.get():.2f}")
     cov_label.pack(side="left")
-    vars.coverage.trace_add("write", lambda *_: cov_label.config(text=f"{vars.coverage.get():.2f}"))
+    bind_coverage_slider(vars.coverage, cov_label, callbacks.save_session)
     ttk.Label(frm, text="口が少し残るなら上げる / 広すぎるなら下げる", font=("", 9)).pack(anchor="w", pady=(0, 8))
 
     # --- Erase shading toggle ---
